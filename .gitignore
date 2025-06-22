@@ -1,0 +1,17 @@
+# Ignorar dependências (node_modules)
+node_modules/
+
+# Ignorar arquivos de ambiente
+.env
+
+# Ignorar logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignorar arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Ignorar configs do VSCode (se estiver usando)
+.vscode/
