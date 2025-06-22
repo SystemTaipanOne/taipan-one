@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taipan-One ERP Access</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Deep Slate & Corporate Blue with Metallic Accents -->
+    <!-- Application Structure Plan: The simulation now more closely mimics a client-server architecture. The JavaScript contains mock database data (users, companies, roles, permissions). The login form "authenticates" against this mock data. The ERP interface then renders dynamically based on the logged-in user's specific role and company permissions, enforcing the business logic described by the user. -->
+    <!-- Visualization & Content Choices: 
+        - Simulated Desktop Login: Maintained.
+        - ERP Interface: All visual elements retained. The core change is in the JavaScript logic, which now simulates a backend API call to fetch user data and permissions, and then renders the UI accordingly.
+        - Granular Permissions: Added a mock permissions table in JS to link roles to specific modules, enabling role-based access control simulation.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body.login-screen {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            background-color: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        body.erp-screen {
+             font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            background-color: #f1f5f9;
+        }
+        #loginAppContainer {
+            background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+            border: 1px solid #334155;
+        }
+        #loginAppHeader { background-color: rgba(0,0,0,0.2); }
+        .login-input { background-color: rgba(255,255,255,0.05); border: 1px solid #475569; color: #e2e8f0; }
+        .login-input:focus { background-color: rgba(255,255,255,0.1); border-color: #64748b; outline: none; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5); }
+        .login-button { background: linear-gradient(to right, #3b82f6, #2563eb); transition: all 0.3s ease; }
+        .login-button:hover { background: linear-gradient(to right, #2563eb, #1d4ed8); box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3); }
+
+        #erpContainer { box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
+        #sidebar { background-color: #0f172a; border-right: 1px solid #1e293b; }
+        #sidebarNav .nav-link.active { background-image: linear-gradient(to right, #2563eb, #3b82f6); color: white; }
+        #sidebarNav .nav-link:not(.active):hover { background-color: #1e293b; }
+        #sidebar .sidebar-section-title { color: #94a3b8; }
+        #erpHeader { background-color: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .kpi-card { background-color: #ffffff; border: 1px solid #e5e7eb; box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: transform 0.2s ease-out, box-shadow 0.2s ease-out; }
+        .kpi-card:hover { transform: translateY(-4px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+        .module-section { background-color: #ffffff; padding: 1.5rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04); }
+        .chart-container-wrapper { background-color: #ffffff; padding: 1.5rem; border-radius: 0.75rem; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04); }
+        .chart-container { position: relative; height: 320px; width: 100%; }
+        .modal { transition: opacity 0.25s ease; }
+        .modal-content { transition: transform 0.25s ease; }
+        .spinner { border-top-color: #3b82f6; animation: spinner 0.6s linear infinite; }
+        @keyframes spinner { to { transform: rotate(360deg); } }
+        #sidebar nav::-webkit-scrollbar { width: 6px; }
+        #sidebar nav::-webkit-scrollbar-track { background: #0f172a; }
+        #sidebar nav::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        #sidebar nav::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .page-content h2 { color: #111827; font-weight: 700; }
+        .page-content h3 { font-size: 1.125rem; font-weight: 600; color: #1f2937; margin-top: 1.25rem; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid #d1d5db; }
+    </style>
+</head>
+<body class="login-screen">
+
+    <div id="loginAppContainer" class="w-full max-w-md rounded-xl overflow-hidden">
+        <div id="loginAppHeader" class="px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center space-x-2">
+                <span class="w-3 h-3 bg-red-500 rounded-full"></span>
+                <span class="w-3 h-3 bg-yellow-400 rounded-full"></span>
+                <span class="w-3 h-3 bg-green-500 rounded-full"></span>
+            </div>
+            <span id="connectionStatus" class="text-xs text-green-400 flex items-center"><span class="w-2 h-2 bg-green-400 rounded-full mr-1.5"></span>Conectado</span>
+        </div>
+        <div class="p-8 md:p-12">
+            <div class="text-center mb-10">
+                <h1 class="text-4xl font-bold text-white mb-2">Taipan-One</h1>
+                <p class="text-slate-400 text-sm">Enterprise Resource Planning</p>
+            </div>
+            <form id="loginForm" class="space-y-6">
+                <div>
+                    <label for="username" class="block text-sm font-medium text-slate-300 mb-1">Utilizador</label>
+                    <input type="text" id="username" name="username" class="login-input w-full px-4 py-3 rounded-lg text-sm" required>
+                </div>
+                <div>
+                    <label for="password" class="block text-sm font-medium text-slate-300 mb-1">Senha</label>
+                    <input type="password" id="password" name="password" class="login-input w-full px-4 py-3 rounded-lg text-sm" required>
+                </div>
+                <div class="text-red-400 text-xs text-center h-4" id="loginError"></div>
+                <div>
+                    <button type="submit" class="login-button w-full text-white font-semibold py-3 px-4 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75">
+                        Aceder ao Sistema
+                    </button>
+                </div>
+            </form>
+            <p class="mt-8 text-center text-xs text-slate-500">&copy; 2025 Taipan Systems Inc.</p>
+        </div>
+    </div>
+
+    <div id="erpContainer" class="hidden w-screen h-screen">
+        <div id="topBar" class="fixed top-0 left-0 right-0 bg-slate-900 text-white p-2 text-xs z-50 flex items-center justify-center space-x-3">
+            <span>Sessão Ativa:</span>
+            <span id="activeUserDisplay" class="font-semibold text-blue-300"></span>
+            <span class="text-slate-500">|</span>
+            <span id="activeCompanyDisplay" class="text-slate-400"></span>
+        </div>
+
+        <div class="flex h-full pt-8">
+            <aside id="sidebar" class="w-72 text-slate-200 flex flex-col transition-all duration-300 ease-in-out md:flex">
+                <div class="h-16 flex items-center justify-center border-b border-slate-700 flex-shrink-0">
+                    <h1 class="text-2xl font-bold text-white">Taipan-One</h1>
+                </div>
+                <nav id="sidebarNav" class="flex-1 px-2 py-4 space-y-1 overflow-y-auto"></nav>
+                <div id="sidebarFooter" class="px-2 py-3 border-t border-slate-700 flex-shrink-0"></div>
+            </aside>
+
+            <div class="flex-1 flex flex-col overflow-hidden">
+                <header id="erpHeader" class="h-16 border-b border-slate-200 flex items-center justify-between px-6 flex-shrink-0">
+                    <div class="flex items-center">
+                        <button id="menu-toggle" class="md:hidden mr-4 text-slate-600 hover:text-slate-800">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+                        </button>
+                    </div>
+                    <div class="flex items-center space-x-6">
+                        <button class="text-slate-500 hover:text-blue-600 relative"><span class="text-2xl">🔔</span><span class="absolute -top-1 -right-1.5 text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5">3</span></button>
+                        <div class="relative group">
+                            <button class="text-slate-500 hover:text-blue-600"><span class="text-2xl">❓</span></button>
+                            <div class="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-xl py-1 hidden group-hover:block z-10 border"><a href="#" class="block px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-100">Central de Ajuda</a></div>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <div id="userAvatar" class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center font-semibold text-white text-lg shadow-md"></div>
+                            <div>
+                                <p id="userName" class="text-sm font-semibold text-slate-800"></p>
+                                <p id="userRole" class="text-xs text-slate-500"></p>
+                            </div>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="flex-1 overflow-x-hidden overflow-y-auto bg-slate-100 p-6 md:p-8">
+                    {/* Pages will be shown here */}
+                </main>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            // --- MOCK DATABASE (Simula a base de dados MySQL) ---
+            const db_companies = [
+                { id: 1, name: "Empresa Alpha", is_active: true },
+                { id: 2, name: "Indústrias Log", is_active: true }
+            ];
+
+            const db_roles = [
+                { id: 1, role_name: "Utilizador Padrão" },
+                { id: 2, role_name: "Admin Empresa" },
+                { id: 3, role_name: "Super Admin" },
+                { id: 4, role_name: "Utilizador Produção" }
+            ];
+
+            const db_users = [
+                { id: 1, company_id: 1, role_id: 1, username: "carlos.mendes", password: "123", full_name: "Carlos Mendes", is_active: true },
+                { id: 2, company_id: 1, role_id: 2, username: "sofia.lima", password: "123", full_name: "Sofia Lima", is_active: true },
+                { id: 3, company_id: null, role_id: 3, username: "ricardo.alves", password: "123", full_name: "Ricardo Alves", is_active: true },
+                { id: 4, company_id: 2, role_id: 2, username: "admin.log", password: "123", full_name: "Admin da Log", is_active: true },
+                { id: 5, company_id: 2, role_id: 4, username: "joao.producao", password: "123", full_name: "João Produção", is_active: true },
+            ];
+            
+            const allModules = [
+                { id: "dashboard", title: "Dashboard", icon: "📊", section: "Geral" },
+                { id: "ceo_cockpit", title: "Cockpit do CEO", icon: "👑", section: "Executivo" },
+                { id: "vendas_crm", title: "Vendas & CRM", icon: "🛒", section: "Comercial" },
+                { id: "contabilidade", title: "Contabilidade", icon: "🧾", section: "Financeiro" },
+                { id: "recursos_humanos", title: "Recursos Humanos", icon: "👥", section: "RH & Pessoal" },
+                { id: "gestao_estoque", title: "Gestão de Estoque", icon: "📦", section: "Operações" },
+                { id: "gestao_producao_pcp", title: "Produção (PCP)", icon: "🏭", section: "Operações" },
+                { id: "company_user_management", title: "Gestão de Utilizadores", icon: "🧑‍💼", section: "Administração Empresa" },
+                { id: "super_admin_client_management", title: "Gestão de Clientes", icon: "🌐", section: "Administração Global" },
+                { id: "configuracoes_sistema", title: "Configurações", icon: "⚙️", section: "Suporte" },
+            ];
+
+            const db_permissions = [
+                // Utilizador Padrão (Vendas)
+                { role_id: 1, module_id: "dashboard" }, { role_id: 1, module_id: "vendas_crm" },
+                // Admin Empresa
+                { role_id: 2, module_id: "dashboard" }, { role_id: 2, module_id: "ceo_cockpit" },
+                { role_id: 2, module_id: "vendas_crm" }, { role_id: 2, module_id: "contabilidade" },
+                { role_id: 2, module_id: "recursos_humanos" }, { role_id: 2, module_id: "gestao_estoque" },
+                { role_id: 2, module_id: "gestao_producao_pcp" }, { role_id: 2, module_id: "company_user_management" },
+                // Super Admin
+                { role_id: 3, module_id: "dashboard" }, { role_id: 3, module_id: "super_admin_client_management" },
+                // Utilizador Produção
+                { role_id: 4, module_id: "dashboard" }, { role_id: 4, module_id: "gestao_producao_pcp" }, { role_id: 4, module_id: "gestao_estoque" },
+            ];
+            
+            // --- FIM DO MOCK DATABASE ---
+
+            const loginAppContainer = document.getElementById('loginAppContainer');
+            const erpContainer = document.getElementById('erpContainer');
+            const loginForm = document.getElementById('loginForm');
+            const loginError = document.getElementById('loginError');
+
+            const sidebarNav = document.getElementById('sidebarNav');
+            const sidebarFooter = document.getElementById('sidebarFooter');
+            const menuToggle = document.getElementById('menu-toggle');
+            const sidebar = document.getElementById('sidebar');
+            
+            const activeUserDisplay = document.getElementById('activeUserDisplay');
+            const activeCompanyDisplay = document.getElementById('activeCompanyDisplay');
+            const userNameEl = document.getElementById('userName');
+            const userRoleEl = document.getElementById('userRole');
+            const userAvatarEl = document.getElementById('userAvatar');
+            const mainContentArea = document.querySelector('main');
+
+            loginForm.addEventListener('submit', (event) => {
+                event.preventDefault();
+                loginError.textContent = '';
+                const username = loginForm.username.value;
+                const password = loginForm.password.value;
+
+                // Em uma aplicação real, isso seria uma chamada `fetch` para um endpoint /api/login
+                const user = db_users.find(u => u.username === username && u.password === password && u.is_active);
+                
+                if (user) {
+                    document.body.classList.remove('login-screen');
+                    document.body.classList.add('erp-screen');
+                    loginAppContainer.classList.add('hidden');
+                    erpContainer.classList.remove('hidden');
+                    initializeERP(user);
+                } else {
+                    loginError.textContent = 'Utilizador ou senha inválidos.';
+                }
+            });
+            
+            function initializeERP(user) {
+                const userRole = db_roles.find(r => r.id === user.role_id);
+                const userCompany = db_companies.find(c => c.id === user.company_id);
+
+                updateUserContext(user, userRole, userCompany);
+                populateSidebar(userRole.id);
+                showPage('dashboard');
+                setActiveSidebarLink('#dashboard');
+                createPagePlaceholders();
+                 if (!window.salesChartInstance) {
+                    window.salesChartInstance = new Chart(document.getElementById('salesChart').getContext('2d'), { 
+                        type: 'bar', data: { labels: ['Jan','Fev','Mar','Abr','Mai','Jun'], datasets: [{ label: 'Vendas', data: [120,135,142,118,160,152.6], backgroundColor: 'rgba(59,130,246,0.8)', borderRadius:6, barThickness: 25 }] },
+                        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, grid: { color: '#e5e7eb' }, ticks: { color: '#6b7280', callback: (v) => `R$${v}k` }}, x: { grid: { display: false }, ticks: { color: '#6b7280' }}}, plugins: { legend: {display:false}, tooltip: {backgroundColor: '#1f2937', titleColor: '#e5e7eb', bodyColor: '#e5e7eb', callbacks:{label:(c)=>`${c.dataset.label}: R$${c.parsed.y}k`}}}}
+                    });
+                }
+            }
+            
+            function updateUserContext(user, role, company) {
+                const displayName = user.full_name;
+                const displayRole = role.role_name;
+                const displayCompany = company ? company.name : "Global";
+                
+                activeUserDisplay.textContent = `${displayName} (${displayRole})`;
+                activeCompanyDisplay.textContent = `Empresa: ${displayCompany}`;
+
+                userNameEl.textContent = displayName;
+                userRoleEl.textContent = displayRole;
+                userAvatarEl.textContent = displayName.split(' ').map(n => n[0]).join('').substring(0,2);
+            }
+
+            function populateSidebar(roleId) {
+                sidebarNav.innerHTML = '';
+                sidebarFooter.innerHTML = '';
+                
+                const userPermissions = db_permissions.filter(p => p.role_id === roleId).map(p => p.module_id);
+                const accessibleModules = allModules.filter(m => userPermissions.includes(m.id));
+
+                const sections = {};
+                accessibleModules.forEach(module => {
+                    if (!sections[module.section]) sections[module.section] = [];
+                    sections[module.section].push(module);
+                });
+
+                const sectionOrder = ["Geral", "Executivo", "Comercial", "Financeiro", "RH & Pessoal", "Operações", "Manutenção & TI", "Análise & Suporte", "Administração Empresa", "Administração Global", "Suporte"];
+                sectionOrder.forEach(sectionName => {
+                    if (sections[sectionName]) {
+                        const sectionTitleEl = document.createElement('div');
+                        sectionTitleEl.className = 'sidebar-section-title';
+                        sectionTitleEl.textContent = sectionName;
+                        sidebarNav.appendChild(sectionTitleEl);
+                        sections[sectionName].forEach(module => {
+                            const link = document.createElement('a');
+                            link.href = `#${module.id}`;
+                            link.className = 'nav-link flex items-center px-3 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors';
+                            link.innerHTML = `<span class="sidebar-icon">${module.icon}</span><span class="ml-3">${module.title}</span>`;
+                            link.addEventListener('click', handleNavLinkClick);
+                            sidebarNav.appendChild(link);
+                        });
+                    }
+                });
+            }
+
+            function createPagePlaceholders() {
+                 mainContentArea.innerHTML = ''; // Clear previous content
+                 allModules.forEach(module => {
+                    const pageDiv = document.createElement('div');
+                    pageDiv.id = module.id;
+                    pageDiv.className = 'page-content hidden';
+                    pageDiv.innerHTML = `<h2 class="text-3xl">${module.title}</h2><div class="module-section mt-6">Conteúdo e funcionalidades para o módulo "${module.title}" serão exibidos aqui.</div>`;
+                    mainContentArea.appendChild(pageDiv);
+                 });
+                 // Re-add dashboard structure
+                 const dashboardDiv = document.getElementById('dashboard');
+                 dashboardDiv.innerHTML = `<h2 id="dashboardTitle" class="text-3xl mb-1">Dashboard</h2>
+                        <p id="dashboardSubtitle" class="text-base text-slate-500 mb-8"></p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                            <div class="kpi-card p-6 rounded-xl"><h3 class="text-sm font-medium text-slate-500">Faturamento Mensal</h3><p class="text-3xl font-bold text-slate-800 mt-2">R$ 152.680,50</p><p class="text-xs text-green-500 mt-1">+12,5%</p></div>
+                            <div class="kpi-card p-6 rounded-xl"><h3 class="text-sm font-medium text-slate-500">Novos Pedidos (Mês)</h3><p class="text-3xl font-bold text-slate-800 mt-2">312</p><p class="text-xs text-green-500 mt-1">+5%</p></div>
+                            <div class="kpi-card p-6 rounded-xl"><h3 class="text-sm font-medium text-slate-500">Clientes Ativos</h3><p class="text-3xl font-bold text-slate-800 mt-2">1.480</p><p class="text-xs text-slate-500 mt-1">Total</p></div>
+                            <div class="kpi-card p-6 rounded-xl"><h3 class="text-sm font-medium text-slate-500">Taxa de Conversão</h3><p class="text-3xl font-bold text-slate-800 mt-2">4,2%</p><p class="text-xs text-red-500 mt-1">-0.8%</p></div>
+                        </div>
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 chart-container-wrapper">
+                                <h3 class="text-lg font-semibold text-slate-800 mb-4">Evolução das Vendas (Últimos 6 Meses)</h3>
+                                <div class="chart-container"><canvas id="salesChart"></canvas></div>
+                            </div>
+                            <div class="module-section">
+                                <h3 class="text-lg font-semibold text-slate-800 mb-4 mt-0">Tarefas Rápidas</h3>
+                                <ul id="taskList" class="space-y-3"></ul>
+                            </div>
+                        </div>`;
+            }
+
+            function showPage(pageId) {
+                document.querySelectorAll('.page-content').forEach(page => page.classList.add('hidden'));
+                const activePage = document.getElementById(pageId);
+                if (activePage) {
+                    activePage.classList.remove('hidden');
+                } else {
+                    document.getElementById('dashboard').classList.remove('hidden'); 
+                }
+            }
+
+            function setActiveSidebarLink(activeLinkHref) {
+                 document.querySelectorAll('#sidebarNav .nav-link, #sidebarFooter .nav-link').forEach(link => link.classList.remove('active'));
+                const activeLink = document.querySelector(`#sidebarNav a[href="${activeLinkHref}"], #sidebarFooter a[href="${activeLinkHref}"]`);
+                if (activeLink) activeLink.classList.add('active');
+            }
+
+            function handleNavLinkClick(event) {
+                event.preventDefault();
+                const pageId = event.currentTarget.getAttribute('href').substring(1);
+                showPage(pageId);
+                setActiveSidebarLink(event.currentTarget.getAttribute('href'));
+                if (window.innerWidth < 768 && !sidebar.classList.contains('-translate-x-full')) sidebar.classList.add('-translate-x-full');
+            }
+            
+            menuToggle.addEventListener('click', () => sidebar.classList.toggle('-translate-x-full') );
+        });
+    </script>
+</body>
+</html>
+

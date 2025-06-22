@@ -1,0 +1,322 @@
+index.html 
+
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taipan-One ERP</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+        body.login-screen { background-color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        body.erp-screen { background-color: #f1f5f9; }
+        #loginAppContainer { background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); }
+        .login-input { background-color: rgba(255,255,255,0.05); border: 1px solid #475569; }
+        #adminContainer { display: none; }
+        #adminContainer.active { display: flex; }
+        #adminSidebar { background-color: #0f172a; }
+        .nav-link.active { background-image: linear-gradient(to right, #2563eb, #3b82f6); color: white; }
+        .nav-link:not(.active):hover { background-color: #1e293b; }
+        .module-section { background-color: #ffffff; padding: 1.5rem; border-radius: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.04); }
+        .page-content h2 { font-weight: 700; color: #111827;}
+        .form-input { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+        .form-label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; font-weight: 500; color: #374151; }
+        .form-button { background-color: #2563eb; color: white; font-weight: 600; padding: 0.5rem 1rem; border-radius: 0.5rem; }
+    </style>
+</head>
+<body class="login-screen">
+    <!-- Ecrã de Login -->
+    <div id="loginAppContainer" class="w-full max-w-md rounded-xl overflow-hidden shadow-2xl">
+        <div class="h-10 px-4 flex justify-between items-center" style="background-color: rgba(0,0,0,0.2);"><div class="flex items-center space-x-2"><div id="light-green" class="w-3 h-3 rounded-full bg-slate-600"></div></div><span id="connectionStatusText" class="text-xs text-slate-400">Verificando...</span></div>
+        <div class="p-8 md:p-12"><div class="text-center mb-10"><h1 class="text-4xl font-bold text-white">Taipan-One</h1></div><form id="loginForm" class="space-y-6"><div><label class="block text-sm text-slate-300 mb-1">Utilizador</label><input type="text" id="username" class="login-input w-full px-4 py-3 rounded-lg text-sm"></div><div><label class="block text-sm text-slate-300 mb-1">Senha</label><input type="password" id="password" class="login-input w-full px-4 py-3 rounded-lg text-sm"></div><div class="text-red-400 text-xs text-center h-4" id="loginError"></div><div><button type="submit" class="w-full text-white font-semibold py-3 px-4 rounded-lg bg-blue-600 hover:bg-blue-700">Aceder</button></div></form></div>
+    </div>
+    <!-- Wrapper da Interface Admin -->
+    <div id="erpWrapper" class="hidden w-screen h-screen">
+        <div id="adminContainer" class="w-full h-full hidden">
+            <div class="flex h-full text-slate-800">
+                <aside id="adminSidebar" class="w-64 flex-shrink-0 flex flex-col text-slate-200"><div class="h-16 flex items-center justify-center flex-shrink-0"><h1 class="text-2xl font-bold text-white">Taipan-One</h1><span class="ml-2 text-xs bg-yellow-400 text-yellow-900 font-bold px-2 py-0.5 rounded-full">ADMIN</span></div><nav id="adminSidebarNav" class="flex-1 px-4 py-6 space-y-2"></nav></aside>
+                <div class="flex-1 flex flex-col overflow-hidden">
+                    <header class="h-16 bg-white flex items-center justify-between px-6 flex-shrink-0 border-b"><h2 id="pageTitle" class="text-xl font-bold"></h2><div class="flex items-center space-x-4"><div class="relative"><div id="adminProfileTrigger" class="flex items-center space-x-3 cursor-pointer"><div id="adminUserAvatar" class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center font-semibold text-white"></div><div><p id="adminUserName" class="text-sm font-semibold"></p><p id="adminUserRole" class="text-xs text-slate-500"></p></div></div><div id="adminUserDropdown" class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-xl py-1 hidden z-10 border"><a href="#" id="adminLogoutButton" class="block px-4 py-2 text-sm text-slate-700 hover:bg-red-500 hover:text-white">Sair</a></div></div></div></header>
+                    <main id="adminMainContent" class="flex-1 overflow-y-auto p-8 bg-slate-100"></main>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            let currentUser = null;
+            let nicheTemplates = {};
+
+            const loginForm = document.getElementById('loginForm');
+            
+            document.getElementById('loginForm').addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const loginError = document.getElementById('loginError');
+                loginError.textContent = '';
+                try {
+                    const response = await fetch('http://localhost:3000/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: loginForm.username.value, password: loginForm.password.value }) });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.message);
+                    sessionStorage.setItem('accessToken', data.accessToken);
+                    currentUser = data.user;
+                    if (currentUser.role.name === 'Super Admin') initializeSuperAdminPanel(currentUser);
+                    else alert('Interface para outros perfis não implementada.');
+                } catch (error) { loginError.textContent = error.message; }
+            });
+
+            function initializeSuperAdminPanel(user) {
+                document.body.className = 'erp-screen';
+                document.getElementById('loginAppContainer').classList.add('hidden');
+                document.getElementById('erpWrapper').classList.remove('hidden');
+                document.getElementById('adminContainer').style.display = 'flex';
+                
+                document.getElementById('adminUserName').textContent = user.fullName;
+                document.getElementById('adminUserRole').textContent = user.role.name;
+                document.getElementById('adminUserAvatar').textContent = user.fullName.split(' ').map(n => n[0]).join('').substring(0, 2);
+                
+                const adminSidebarNav = document.getElementById('adminSidebarNav');
+                adminSidebarNav.innerHTML = '';
+                user.permissions.forEach(module => {
+                    const link = document.createElement('a');
+                    link.href = `#${module.id}`;
+                    link.className = 'nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg text-slate-300';
+                    link.innerHTML = `<span class="w-6 text-center">${module.icon}</span><span class="ml-3">${module.name}</span>`;
+                    link.addEventListener('click', (e) => { e.preventDefault(); showAdminPage(module.id, module.name); });
+                    adminSidebarNav.appendChild(link);
+                });
+
+                showAdminPage('admin_dashboard', 'Dashboard Admin');
+                
+                const adminProfileTrigger = document.getElementById('adminProfileTrigger');
+                const adminUserDropdown = document.getElementById('adminUserDropdown');
+                adminProfileTrigger.addEventListener('click', (e) => { e.stopPropagation(); adminUserDropdown.classList.toggle('hidden'); });
+                document.addEventListener('click', () => { if (!adminUserDropdown.classList.contains('hidden')) adminUserDropdown.classList.add('hidden'); });
+                document.getElementById('adminLogoutButton').addEventListener('click', (e) => { e.preventDefault(); sessionStorage.removeItem('accessToken'); window.location.reload(); });
+            }
+            
+            async function showAdminPage(pageId, pageTitle) {
+                const adminMainContent = document.getElementById('adminMainContent');
+                document.getElementById('pageTitle').textContent = pageTitle;
+                adminMainContent.innerHTML = `<div class="text-slate-600">Carregando...</div>`;
+                document.querySelectorAll('#adminSidebarNav .nav-link').forEach(l => l.classList.remove('active'));
+                document.querySelector(`#adminSidebarNav a[href="#${pageId}"]`).classList.add('active');
+                
+                if (pageId === 'admin_client_management') {
+                     adminMainContent.innerHTML = `<div class="module-section" id="clientListContainer"></div><div class="module-section mt-6"><h3>Criar Novo Cliente</h3><form id="createCompanyForm" class="grid grid-cols-2 gap-4 mt-4"><div><label class="form-label">Nome da Empresa</label><input name="companyName" class="form-input"></div><div><label class="form-label">Nicho de Mercado</label><select name="niche" id="nicheSelector" class="form-input"><option>Carregando...</option></select></div><div><label class="form-label">Username do Admin</label><input name="adminUsername" class="form-input"></div><div><label class="form-label">Senha Provisória</label><input type="password" name="adminPassword" class="form-input"></div><div class="col-span-2"><label class="form-label">Nome Completo do Admin</label><input name="adminFullName" class="form-input"></div><div class="col-span-2"><button type="submit" class="form-button">Criar Cliente</button></div></form><div id="formStatus" class="mt-2 text-sm"></div></div>`;
+                     document.getElementById('createCompanyForm').addEventListener('submit', handleCreateCompany);
+                     loadClientList();
+                     loadNicheOptions();
+                } else {
+                     adminMainContent.innerHTML = `<div class="module-section">Conteúdo para ${pageTitle}.</div>`;
+                }
+            }
+            
+            async function loadClientList() {
+                const clientListContainer = document.getElementById('clientListContainer');
+                clientListContainer.innerHTML = 'Carregando lista de clientes...';
+                try {
+                    const response = await fetch('http://localhost:3000/api/admin/clients', { headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } });
+                    if(!response.ok) throw new Error('Falha ao buscar clientes.');
+                    const clients = await response.json();
+                    let tableHTML = '<table class="w-full text-sm text-left"><thead><tr class="text-left bg-slate-50"><th class="p-3 font-semibold">Cliente</th><th class="p-3 font-semibold">Módulos</th></tr></thead><tbody>';
+                    clients.forEach(client => { tableHTML += `<tr class="border-b"><td class="p-3">${client.name}</td><td class="p-3">${client.licensed_modules}</td></tr>`; });
+                    clientListContainer.innerHTML = tableHTML + '</tbody></table>';
+                } catch(error) { clientListContainer.innerHTML = `<p class="p-4 text-red-500">Erro: ${error.message}</p>`; }
+            }
+            
+            async function loadNicheOptions() {
+                 const nicheSelector = document.getElementById('nicheSelector');
+                 try {
+                     const response = await fetch('http://localhost:3000/api/admin/niches', { headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } });
+                     nicheTemplates = await response.json();
+                     nicheSelector.innerHTML = '<option value="">-- Selecione um Nicho --</option>';
+                     for (const niche in nicheTemplates) {
+                         nicheSelector.innerHTML += `<option value="${niche}">${nicheTemplates[niche].name}</option>`;
+                     }
+                 } catch (error) {
+                     nicheSelector.innerHTML = '<option>Erro ao carregar</option>';
+                 }
+            }
+
+            async function handleCreateCompany(event) {
+                event.preventDefault();
+                const form = event.target;
+                const statusEl = document.getElementById('formStatus');
+                statusEl.textContent = 'A processar...';
+                const data = Object.fromEntries(new FormData(form).entries());
+                try {
+                    const response = await fetch('/api/admin/companies', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }, body: JSON.stringify(data) });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.message);
+                    statusEl.textContent = result.message;
+                    form.reset();
+                    loadClientList();
+                } catch (error) { statusEl.textContent = `Erro: ${error.message}`; }
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+launch.json
+
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "Launch Chrome against localhost",
+            "url": "http://localhost:3306",
+            "webRoot": "${workspaceFolder}"
+        }
+    ]
+}
+
+
+server.js
+
+// --- Servidor Backend para o Taipan-One ERP (v17 - Versão Definitiva e Funcional) ---
+
+const express = require('express');
+const mysql = require('mysql2/promise');
+const cors = require('cors');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const dbConfig = { host: 'localhost', user: 'taipan_user', password: 'Taipan@2025', database: 'taipan_one_db' };
+const JWT_SECRET = 'seu_segredo_super_secreto_para_jwt_v17';
+
+// Middleware de autenticação
+const authenticateToken = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1];
+    if (!token) return res.sendStatus(401);
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// --- ROTAS PÚBLICAS ---
+app.get('/api/status', async (req, res) => {
+    try {
+        const connection = await mysql.createConnection(dbConfig);
+        await connection.ping();
+        await connection.end();
+        res.status(200).json({ status: 'ok' });
+    } catch (error) {
+        res.status(503).json({ status: 'error' });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    let connection;
+    try {
+        connection = await mysql.createConnection(dbConfig);
+        const [users] = await connection.execute('SELECT * FROM users WHERE username = ? AND is_active = 1', [username]);
+        if (users.length === 0) throw new Error('Credenciais inválidas');
+        
+        const user = users[0];
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) throw new Error('Credenciais inválidas');
+        
+        const [role] = await connection.execute('SELECT role_name FROM roles WHERE id = ?', [user.role_id]);
+        if (role.length === 0) throw new Error('Perfil de utilizador inválido.');
+
+        let licensedModules = [];
+        if (user.role_id === 101) { // Super Admin
+            const [allAdminModules] = await connection.execute('SELECT id, name, icon, section FROM modules WHERE is_super_admin_only = TRUE ORDER BY section, name');
+            licensedModules = allAdminModules;
+        } else if (user.company_id) { // Utilizadores de empresas
+            const [companyModules] = await connection.execute('SELECT m.id, m.name, m.icon, m.section FROM company_module_access cma JOIN modules m ON cma.module_id = m.id WHERE cma.company_id = ? AND m.is_super_admin_only = FALSE', [user.company_id]);
+            licensedModules = companyModules;
+        }
+        
+        const [company] = user.company_id ? await connection.execute('SELECT name FROM companies WHERE id = ?', [user.company_id]) : [[{name: 'Global'}]];
+        const userPayload = { id: user.id, role: role[0].role_name, companyId: user.company_id };
+        const accessToken = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '8h' });
+
+        res.status(200).json({ accessToken, user: {
+            fullName: user.full_name,
+            role: { name: role[0].role_name },
+            company: { name: company[0].name },
+            permissions: licensedModules
+        }});
+    } catch (error) {
+        res.status(401).json({ message: error.message || 'Ocorreu um erro.' });
+    } finally {
+        if(connection) await connection.end();
+    }
+});
+
+// --- ROTAS PROTEGIDAS (SUPER ADMIN) ---
+const nicheTemplates = {
+    'industria': { name: 'Indústria', modules: ['dashboard', 'producao', 'logistica', 'compras', 'qualidade', 'financeiro', 'rh', 'ti'] },
+    'varejo': { name: 'Varejo', modules: ['dashboard', 'vendas', 'marketing', 'compras', 'logistica', 'financeiro', 'rh', 'ti'] },
+    'servicos': { name: 'Serviços', modules: ['dashboard', 'vendas', 'projetos', 'financeiro', 'rh', 'ti'] }
+};
+
+app.get('/api/admin/niches', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'Super Admin') return res.status(403);
+    res.status(200).json(nicheTemplates);
+});
+
+app.post('/api/admin/companies', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'Super Admin') return res.status(403);
+    const { companyName, adminUsername, adminPassword, adminFullName, niche } = req.body;
+    if (!companyName || !adminUsername || !adminPassword || !adminFullName || !niche) {
+        return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
+    }
+    const selectedModules = nicheTemplates[niche]?.modules;
+    if (!selectedModules) return res.status(400).json({ message: 'Nicho inválido.' });
+    let connection;
+    try {
+        connection = await mysql.createConnection(dbConfig);
+        await connection.beginTransaction();
+        const [companyResult] = await connection.execute('INSERT INTO companies (name) VALUES (?)', [companyName]);
+        const newCompanyId = companyResult.insertId;
+        const passwordHash = await bcrypt.hash(adminPassword, 10);
+        await connection.execute('INSERT INTO users (company_id, role_id, username, email, password_hash, full_name, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)', [newCompanyId, 100, adminUsername, `${adminUsername}@${niche}.local`, passwordHash, adminFullName, true]);
+        const moduleInsertPromises = selectedModules.map(moduleId => connection.execute('INSERT INTO company_module_access (company_id, module_id) VALUES (?, ?)', [newCompanyId, moduleId]));
+        await Promise.all(moduleInsertPromises);
+        await connection.commit();
+        res.status(201).json({ message: `Empresa "${companyName}" criada com sucesso!` });
+    } catch (error) {
+        if(connection) await connection.rollback();
+        if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Nome da empresa ou username do admin já existe.' });
+        res.status(500).json({ message: 'Erro ao criar a empresa.' });
+    } finally {
+        if(connection) await connection.end();
+    }
+});
+
+app.get('/api/admin/clients', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'Super Admin') return res.status(403);
+    let connection;
+    try {
+        connection = await mysql.createConnection(dbConfig);
+        const [clients] = await connection.execute('SELECT c.id, c.name FROM companies c ORDER BY c.name');
+        res.status(200).json(clients);
+    } catch (error) {
+        res.status(500).json({ message: 'Erro ao buscar clientes.' });
+    } finally {
+        if(connection) await connection.end();
+    }
+});
+
+const PORT = 3000;
+app.listen(PORT, () => console.log(`Servidor Taipan-One (v17 - Final) a correr na porta ${PORT}`));
+

@@ -1,0 +1,935 @@
+server.js
+
+require('dotenv').config();
+
+const express = require('express');
+const mysql = require('mysql2/promise');
+const cors = require('cors');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const path = require('path'); // INSERIDO: Para manipular caminhos de arquivos
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// INSERIDO: Configura o Express para servir arquivos estáticos da pasta 'public'
+app.use(express.static(path.join(__dirname, 'public')));
+
+const pool = mysql.createPool({
+    host: 'localhost',
+    user: 'root',
+    password: process.env.DB_PASSWORD,
+    database: 'taipan_one_db',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+});
+
+pool.getConnection()
+    .then(conn => {
+        console.log('Connected to MySQL database');
+        conn.release();
+    })
+    .catch(err => {
+        console.error('Failed to connect to MySQL:', err.message);
+        process.exit(1);
+    });
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ message: 'Token não fornecido' });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ message: 'Token inválido' });
+        req.user = user;
+        next();
+    });
+}
+
+function ensureSuperAdmin(req, res, next) {
+    if (req.user.role_id !== 101) {
+        return res.status(403).json({ message: 'Acesso restrito a super admins' });
+    }
+    next();
+}
+
+function ensureMasterAdmin(req, res, next) {
+    if (req.user.role_id !== 101 || !req.user.canManageSuperAdmins) {
+        return res.status(403).json({ message: 'Acesso restrito ao admin master.' });
+    }
+    next();
+}
+
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const [rows] = await pool.query('SELECT *, can_manage_super_admins FROM users WHERE username = ?', [username]);
+        const user = rows[0];
+        if (!user) return res.status(401).json({ message: 'Credenciais inválidas' });
+
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match) return res.status(401).json({ message: 'Credenciais inválidas' });
+
+        const tokenPayload = { 
+            id: user.id, 
+            role_id: user.role_id,
+            canManageSuperAdmins: !!user.can_manage_super_admins 
+        };
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '1h' });
+        
+        res.json({
+            accessToken: token,
+            user: {
+                id: user.id,
+                fullName: user.full_name,
+                role: { name: user.role_id === 101 ? 'Super Admin' : 'Other' },
+                canManageSuperAdmins: !!user.can_manage_super_admins,
+                permissions: user.role_id === 101 ? [
+                    { id: 'admin_dashboard', name: 'Dashboard Admin' },
+                    { id: 'admin_client_management', name: 'Gestão de Clientes' },
+                ] : []
+            }
+        });
+    } catch (error) {
+        console.error('Erro no login:', error.message);
+        res.status(500).json({ message: 'Erro no servidor' });
+    }
+});
+
+app.get('/api/admin/superadmins', authenticateToken, ensureMasterAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query("SELECT id, username, full_name, can_manage_super_admins FROM users WHERE role_id = 101 ORDER BY id");
+        res.json(rows);
+    } catch(error) {
+        res.status(500).json({ message: 'Erro ao buscar administradores.' });
+    }
+});
+
+app.post('/api/admin/superadmins', authenticateToken, ensureMasterAdmin, async (req, res) => {
+    const { username, fullName, password, canManage } = req.body;
+    if (!username || !fullName || !password) {
+        return res.status(400).json({ message: "Todos os campos são obrigatórios." });
+    }
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await pool.query(
+            "INSERT INTO users (username, full_name, password_hash, role_id, can_manage_super_admins, email, is_active) VALUES (?, ?, ?, 101, ?, ?, 1)",
+            [username, fullName, hashedPassword, canManage ? 1 : 0, `${username}@taipan.local`]
+        );
+        res.status(201).json({ message: "Super Admin criado com sucesso." });
+    } catch(error) {
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ message: "Username já existe." });
+        }
+        res.status(500).json({ message: 'Erro ao criar Super Admin.' });
+    }
+});
+
+app.delete('/api/admin/superadmins/:id', authenticateToken, ensureMasterAdmin, async (req, res) => {
+    const adminIdToDelete = parseInt(req.params.id, 10);
+    
+    if (adminIdToDelete === req.user.id) {
+        return res.status(403).json({ message: "Não pode excluir a si mesmo." });
+    }
+
+    const [[userToDelete]] = await pool.query("SELECT can_manage_super_admins, username FROM users WHERE id = ?", [adminIdToDelete]);
+    if (userToDelete && userToDelete.username === 'master') {
+         return res.status(403).json({ message: "O administrador master não pode ser excluído." });
+    }
+
+    try {
+        const [result] = await pool.query("DELETE FROM users WHERE id = ? AND role_id = 101", [adminIdToDelete]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "Administrador não encontrado." });
+        }
+        res.json({ message: "Super Admin excluído com sucesso." });
+    } catch(error) {
+        res.status(500).json({ message: 'Erro ao excluir Super Admin.' });
+    }
+});
+
+app.get('/api/admin/clients', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT c.id, c.name, GROUP_CONCAT(m.name) AS licensed_modules
+            FROM companies c
+            LEFT JOIN company_module_access cm ON c.id = cm.company_id
+            LEFT JOIN modules m ON cm.module_id = m.id
+            GROUP BY c.id, c.name
+        `);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar clientes:', error.message);
+        res.status(500).json({ message: 'Erro ao buscar clientes' });
+    }
+});
+
+app.get('/api/admin/clients/:id', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT c.id, c.name, c.niche, GROUP_CONCAT(m.name) AS licensed_modules 
+            FROM companies c 
+            LEFT JOIN company_module_access cm ON c.id = cm.company_id 
+            LEFT JOIN modules m ON cm.module_id = m.id 
+            WHERE c.id = ? 
+            GROUP BY c.id, c.name, c.niche
+        `, [req.params.id]);
+        if (!rows[0]) return res.status(404).json({ message: 'Cliente não encontrado' });
+        res.json(rows[0]);
+    } catch (error) {
+        console.error('Erro ao obter cliente:', error.message);
+        res.status(500).json({ message: 'Erro no servidor' });
+    }
+});
+
+app.get('/api/admin/clients/:id/users', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT u.id, u.username, u.full_name, u.is_active
+            FROM users u
+            WHERE u.company_id = ? AND u.role_id != 101
+        `, [req.params.id]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar usuários:', error.message);
+        res.status(500).json({ message: 'Erro ao buscar usuários' });
+    }
+});
+
+app.post('/api/admin/companies', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    const { companyName, niche, adminUsername, adminPassword, adminFullName, modules } = req.body;
+    try {
+        await pool.query('BEGIN');
+        const [companyResult] = await pool.query('INSERT INTO companies (name, niche) VALUES (?, ?)', [companyName, niche]);
+        const companyId = companyResult.insertId;
+
+        const hashedPassword = await bcrypt.hash(adminPassword, 10);
+        const [adminUserResult] = await pool.query('INSERT INTO users (username, password_hash, full_name, company_id, role_id, is_active, email) VALUES (?, ?, ?, ?, ?, ?, ?)', 
+            [adminUsername, hashedPassword, adminFullName, companyId, 102, 1, `${adminUsername}@company.local`]);
+        const adminUserId = adminUserResult.insertId;
+
+        if (modules && modules.length > 0) {
+            for (const moduleName of modules) {
+                const [[module]] = await pool.query('SELECT id FROM modules WHERE name = ?', [moduleName]);
+                if (module) {
+                    await pool.query('INSERT INTO company_module_access (company_id, module_id) VALUES (?, ?)', [companyId, module.id]);
+                }
+            }
+        }
+
+        await pool.query('COMMIT');
+        res.status(201).json({ message: 'Empresa criada com sucesso' });
+    } catch (error) {
+        console.error('Erro ao criar empresa:', error.message);
+        await pool.query('ROLLBACK');
+        res.status(500).json({ message: 'Falha ao criar empresa' });
+    }
+});
+
+app.put('/api/admin/clients/:id', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    const { companyName } = req.body;
+    try {
+        await pool.query('UPDATE companies SET name = ? WHERE id = ?', [companyName, req.params.id]);
+        res.json({ message: 'Cliente atualizado com sucesso' });
+    } catch (error) {
+        console.error('Erro ao atualizar cliente:', error.message);
+        res.status(500).json({ message: 'Falha ao atualizar cliente' });
+    }
+});
+
+app.put('/api/admin/clients/:id/modules', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    const { niche, modules } = req.body;
+    const companyId = req.params.id;
+    try {
+        await pool.query('BEGIN');
+        await pool.query('UPDATE companies SET niche = ? WHERE id = ?', [niche, companyId]);
+        await pool.query('DELETE FROM company_module_access WHERE company_id = ?', [companyId]);
+        if (modules && modules.length > 0) {
+            for (const moduleName of modules) {
+                const [[module]] = await pool.query('SELECT id FROM modules WHERE name = ?', [moduleName]);
+                if (module) {
+                    await pool.query('INSERT INTO company_module_access (company_id, module_id) VALUES (?, ?)', [companyId, module.id]);
+                }
+            }
+        }
+        await pool.query('COMMIT');
+        res.json({ message: 'Módulos atualizados com sucesso' });
+    } catch (error) {
+        console.error('Erro ao atualizar módulos:', error.message);
+        await pool.query('ROLLBACK');
+        res.status(500).json({ message: 'Falha ao atualizar módulos' });
+    }
+});
+
+app.delete('/api/admin/clients/:id', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        await pool.query('BEGIN');
+        const [users] = await pool.query("SELECT id FROM users WHERE company_id = ?", [req.params.id]);
+        if (users.length > 0) {
+            const userIds = users.map(u => u.id);
+            await pool.query("DELETE FROM user_module_access WHERE user_id IN (?)", [userIds]);
+        }
+        await pool.query('DELETE FROM company_module_access WHERE company_id = ?', [req.params.id]);
+        await pool.query('DELETE FROM users WHERE company_id = ?', [req.params.id]);
+        await pool.query('DELETE FROM companies WHERE id = ?', [req.params.id]);
+        await pool.query('COMMIT');
+        res.json({ message: 'Cliente e todos os dados associados foram deletados com sucesso' });
+    } catch (error) {
+        console.error('Erro ao deletar cliente:', error.message);
+        await pool.query('ROLLBACK');
+        res.status(500).json({ message: 'Falha ao deletar cliente' });
+    }
+});
+
+// INSERIDO: Serve o index.html para qualquer rota não tratada
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(3000, '0.0.0.0', () => {
+    console.log('Server running on http://0.0.0.0:3000');
+});
+
+
+index.html
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taipan-One ERP</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Estilos combinados dos dois layouts para um resultado coeso */
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+        body.login-screen { background-color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        body.erp-screen { background-color: #f1f5f9; }
+
+        /* Estilos da tela de Login (do nosso sistema funcional) */
+        #loginAppContainer { background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); }
+        .login-input { background-color: rgba(255,255,255,0.05); border: 1px solid #475569; }
+
+        /* Estilos do Painel ERP (do novo layout) */
+        #sidebar { background-color: #1e293b; }
+        .nav-link.active { background-color: #3b82f6; color: white; }
+        .nav-link:not(.active):hover { background-color: #374151; }
+        .page-content { display: none; }
+        .page-content.active { display: block; }
+
+        /* Estilos dos formulários e tabelas (do nosso sistema funcional) */
+        .module-section { background-color: #ffffff; padding: 1.5rem; border-radius: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.04); }
+        .form-input { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+        .form-label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; font-weight: 500; color: #374151; }
+        .form-button { background-color: #2563eb; color: white; font-weight: 600; padding: 0.5rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; transition: background-color 0.2s; }
+        .form-button:hover { background-color: #1d4ed8; }
+        .form-button-red { background-color: #dc2626; }
+        .form-button-red:hover { background-color: #b91c1c; }
+        .form-button-gray { background-color: #6b7280; }
+        .form-button-gray:hover { background-color: #4b5563; }
+        .action-button { padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 0.375rem; }
+
+        /* Estilos do Modal (do nosso sistema funcional) */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 50; transition: opacity 0.25s ease; }
+        .modal.active { display: flex; justify-content: center; align-items: center; }
+        .modal-content { background-color: white; padding: 2rem; border-radius: 0.75rem; max-width: 800px; width: 90%; max-height: 85vh; overflow-y: auto; transform: scale(0.95); transition: transform 0.25s ease; }
+        .modal.active .modal-content { transform: scale(1); }
+    </style>
+</head>
+<body class="login-screen">
+
+    <!-- Tela de Login do nosso sistema funcional -->
+    <div id="loginAppContainer" class="w-full max-w-md rounded-xl overflow-hidden shadow-2xl">
+        <div class="p-8 md:p-12">
+            <div class="text-center mb-10">
+                <h1 class="text-4xl font-bold text-white">Taipan-ONE ERP</h1>
+            </div>
+            <form id="loginForm" class="space-y-6">
+                <div>
+                    <label class="block text-sm text-slate-300 mb-1">Utilizador</label>
+                    <input type="text" id="username" class="login-input w-full px-4 py-3 rounded-lg text-sm text-white" required>
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-300 mb-1">Senha</label>
+                    <input type="password" id="password" class="login-input w-full px-4 py-3 rounded-lg text-sm text-white" required>
+                </div>
+                <div class="text-red-400 text-xs text-center h-4" id="loginError"></div>
+                <div>
+                    <button type="submit" class="w-full text-white font-semibold py-3 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 transition-colors">Aceder</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Estrutura do Painel ERP (do novo layout) -->
+    <div id="erpWrapper" class="hidden h-screen">
+        <div class="flex h-full bg-slate-100">
+            <aside id="sidebar" class="w-64 bg-slate-800 text-slate-200 flex flex-col">
+                <div class="h-16 flex items-center justify-center border-b border-slate-700 flex-shrink-0">
+                    <h1 class="text-2xl font-bold text-white">Taipan-ONE ERP</h1>
+                </div>
+                <nav id="sidebarNav" class="flex-1 px-2 py-4 space-y-1 overflow-y-auto"></nav>
+                <!-- LOCAL ONDE O BOTÃO CONFIGURAÇÕES É ADICIONADO -->
+                <div id="sidebarFooter" class="px-2 py-3 border-t border-slate-700 flex-shrink-0"></div>
+            </aside>
+
+            <div class="flex-1 flex flex-col overflow-hidden">
+                <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 flex-shrink-0">
+                    <h2 id="pageTitle" class="text-xl font-bold text-slate-800"></h2>
+                    <div class="flex items-center space-x-4">
+                        <div id="userAvatar" class="w-10 h-10 rounded-full bg-blue-200 flex items-center justify-center font-bold text-blue-700"></div>
+                        <div>
+                            <p id="userName" class="text-sm font-semibold text-slate-800"></p>
+                            <p id="userRole" class="text-xs text-slate-500"></p>
+                        </div>
+                        <button id="adminLogoutButton" class="text-slate-500 hover:text-red-600" title="Sair">
+                            <i class="fas fa-sign-out-alt fa-lg"></i>
+                        </button>
+                    </div>
+                </header>
+
+                <main id="adminMainContent" class="flex-1 overflow-x-hidden overflow-y-auto bg-slate-100 p-6 md:p-8">
+                    <!-- Conteúdo das páginas será injetado aqui -->
+                </main>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals do nosso sistema funcional -->
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">Usuários do Cliente</h3>
+                <button id="closeUserModal" class="text-gray-500 hover:text-gray-600"><i class="fas fa-times fa-lg"></i></button>
+            </div>
+            <div id="userListContainer" class="text-sm"></div>
+        </div>
+    </div>
+    <div id="deleteClientModal" class="modal">
+        <div class="modal-content">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">Confirmar Exclusão do Cliente</h3>
+                <button id="closeDeleteModal" class="text-gray-500 hover:text-gray-600"><i class="fas fa-times fa-lg"></i></button>
+            </div>
+            <form id="deleteClientForm" class="space-y-4">
+                <p class="text-sm text-gray-600">Digite as credenciais de super admin para confirmar a exclusão de <span id="deleteClientName" class="font-semibold"></span>.</p>
+                <div>
+                    <label class="form-label">Utilizador</label>
+                    <input type="text" name="superUsername" class="form-input" required>
+                </div>
+                <div>
+                    <label class="form-label">Password</label>
+                    <input type="password" name="superPassword" class="form-input" required>
+                </div>
+                <div id="deleteError" class="text-red-500 text-sm"></div>
+                <div class="flex justify-end space-x-2">
+                    <button type="button" id="cancelDelete" class="form-button form-button-gray">Cancelar</button>
+                    <button type="submit" class="form-button form-button-red">Excluir</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let currentUser = null;
+            let nicheTemplates = {};
+
+            const moduleIcons = {
+                'Financeiro': 'fas fa-dollar-sign', 'Logística': 'fas fa-truck', 'Gerente': 'fas fa-user-tie',
+                'Diretor': 'fas fa-briefcase', 'Vendas': 'fas fa-shopping-cart', 'Recursos Humanos': 'fas fa-users',
+                'TI': 'fas fa-laptop', 'Produção': 'fas fa-industry', 'Marketing': 'fas fa-bullhorn',
+                'Jurídico': 'fas fa-balance-scale', 'Compras': 'fas fa-shopping-bag', 'Projetos': 'fas fa-project-diagram',
+                'Auditoria': 'fas fa-search', 'Departamento Pessoal': 'fas fa-id-card', 'Segurança do Trabalho': 'fas fa-hard-hat',
+                'Mecânica': 'fas fa-tools', 'Segurança Interna': 'fas fa-shield-alt', 'Qualidade': 'fas fa-check-circle',
+                'Dashboard Admin': 'fas fa-tachometer-alt', 'Gestão de Clientes': 'fas fa-building',
+                'Manutenção Fabril': 'fas fa-tools', 'Configurações': 'fas fa-cog'
+            };
+
+            const loginForm = document.getElementById('loginForm');
+            loginForm.addEventListener('submit', handleLogin);
+
+            async function handleLogin(event) {
+                event.preventDefault();
+                const loginError = document.getElementById('loginError');
+                loginError.textContent = '';
+                try {
+                    const response = await fetch('http://localhost:3000/api/login', { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: loginForm.username.value, password: loginForm.password.value })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.message || 'Erro desconhecido.');
+                    sessionStorage.setItem('accessToken', data.accessToken);
+                    currentUser = data.user;
+                    if (currentUser.role.name === 'Super Admin') {
+                        initializeSuperAdminPanel(currentUser);
+                    } else {
+                        alert('Interface para outros perfis não implementada.');
+                    }
+                } catch (error) { 
+                    console.error('Erro no login:', error);
+                    loginError.textContent = error.message;
+                }
+            }
+
+            // FUNÇÃO QUE INICIALIZA O PAINEL E ADICIONA O BOTÃO CONFIGURAÇÕES
+            function initializeSuperAdminPanel(user) {
+                document.body.className = 'erp-screen';
+                document.getElementById('loginAppContainer').classList.add('hidden');
+                document.getElementById('erpWrapper').classList.remove('hidden');
+                
+                document.getElementById('userName').textContent = user.fullName;
+                document.getElementById('userRole').textContent = user.role.name;
+                document.getElementById('userAvatar').textContent = user.fullName.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+                
+                const sidebarNav = document.getElementById('sidebarNav');
+                sidebarNav.innerHTML = '';
+                user.permissions.forEach(module => {
+                    const link = createSidebarLink(module.id, module.name, moduleIcons[module.name] || 'fas fa-cube');
+                    sidebarNav.appendChild(link);
+                });
+                
+                // ADICIONA O BOTÃO CONFIGURAÇÕES NO RODAPÉ PARA O MASTER
+                if (user.canManageSuperAdmins) {
+                    const sidebarFooter = document.getElementById('sidebarFooter');
+                    sidebarFooter.innerHTML = '';
+                    const settingsLink = createSidebarLink('admin_settings', 'Configurações', 'fas fa-cog');
+                    sidebarFooter.appendChild(settingsLink);
+                }
+
+                showAdminPage('admin_dashboard', 'Dashboard Admin');
+                sidebarNav.querySelector('.nav-link')?.classList.add('active');
+
+                document.getElementById('adminLogoutButton').addEventListener('click', (e) => { 
+                    e.preventDefault(); 
+                    sessionStorage.removeItem('accessToken');
+                    window.location.reload(); 
+                });
+            }
+
+            function createSidebarLink(id, name, iconClass) {
+                const link = document.createElement('a');
+                link.href = `#${id}`;
+                link.className = 'nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg text-slate-300 transition-colors';
+                link.innerHTML = `<span class="w-6 text-center"><i class="${iconClass}"></i></span><span class="ml-3">${name}</span>`;
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    showAdminPage(id, name);
+                    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                    link.classList.add('active');
+                });
+                return link;
+            }
+            
+            async function showAdminPage(pageId, pageTitle) {
+                const adminMainContent = document.getElementById('adminMainContent');
+                document.getElementById('pageTitle').textContent = pageTitle;
+                
+                if (pageId === 'admin_client_management') {
+                    adminMainContent.innerHTML = `
+                        <div class="space-y-6">
+                            <div id="createClientSection" class="module-section"></div>
+                            <div id="clientListSection" class="module-section"></div>
+                        </div>`;
+                    renderCreateClientForm();
+                    loadClientList();
+                } else if (pageId === 'admin_settings') {
+                    // CHAMA A PÁGINA DE GERENCIAMENTO DE SUPERADMINISTRADORES
+                    renderSuperAdminManagementPage();
+                }
+                else {
+                    adminMainContent.innerHTML = `<div class="module-section">Conteúdo para ${pageTitle}.</div>`;
+                }
+            }
+            
+            // PÁGINA DE GERENCIAMENTO DE SUPERADMINISTRADORES
+            function renderSuperAdminManagementPage() {
+                const adminMainContent = document.getElementById('adminMainContent');
+                adminMainContent.innerHTML = `
+                    <div class="space-y-6">
+                        <div class="module-section">
+                            <h3 class="text-lg font-bold mb-4">Adicionar Novo Super Admin</h3>
+                            <form id="createSuperAdminForm" class="space-y-4">
+                                <div><label class="form-label">Username</label><input name="username" class="form-input" required></div>
+                                <div><label class="form-label">Nome Completo</label><input name="fullName" class="form-input" required></div>
+                                <div><label class="form-label">Senha</label><input type="password" name="password" class="form-input" required></div>
+                                <div class="flex items-center space-x-2">
+                                    <input type="checkbox" name="canManage" id="canManageCheckbox" class="h-4 w-4 text-blue-600 rounded">
+                                    <label for="canManageCheckbox" class="form-label !mb-0">Pode gerir outros Super Admins?</label>
+                                </div>
+                                <button type="submit" class="form-button">Criar Super Admin</button>
+                            </form>
+                            <div id="superAdminFormStatus" class="mt-2 text-sm"></div>
+                        </div>
+                        <div id="superAdminListSection" class="module-section">Carregando lista...</div>
+                    </div>`;
+                document.getElementById('createSuperAdminForm').addEventListener('submit', handleCreateSuperAdmin);
+                loadSuperAdmins();
+            }
+
+            // LISTA SUPERADMINISTRADORES
+            async function loadSuperAdmins() {
+                const listContainer = document.getElementById('superAdminListSection');
+                try {
+                    const response = await fetch('http://localhost:3000/api/admin/superadmins', { 
+                        headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } 
+                    });
+                    if (!response.ok) throw new Error('Falha ao buscar administradores.');
+                    const admins = await response.json();
+
+                    let tableHTML = `<h3 class="text-lg font-bold mb-4">Lista de Super Admins</h3><div class="overflow-x-auto"><table class="w-full text-sm text-left"><thead><tr class="bg-slate-50"><th class="p-3 font-semibold">Username</th><th class="p-3 font-semibold">Nome</th><th class="p-3 font-semibold">Pode Gerir?</th><th class="p-3 font-semibold text-right">Ação</th></tr></thead><tbody>`;
+                    admins.forEach(admin => {
+                        tableHTML += `
+                            <tr class="border-b">
+                                <td class="p-3">${admin.username}</td>
+                                <td class="p-3">${admin.full_name}</td>
+                                <td class="p-3">${admin.can_manage_super_admins ? 'Sim' : 'Não'}</td>
+                                <td class="p-3 text-right">
+                                    ${(admin.username !== 'master' && admin.id !== currentUser.id) ? `<button class="delete-superadmin-btn action-button form-button-red" data-id="${admin.id}" title="Excluir"><i class="fas fa-trash"></i></button>` : ''}
+                                </td>
+                            </tr>`;
+                    });
+                    tableHTML += `</tbody></table></div>`;
+                    listContainer.innerHTML = tableHTML;
+
+                    document.querySelectorAll('.delete-superadmin-btn').forEach(btn => btn.addEventListener('click', () => handleDeleteSuperAdmin(btn.dataset.id)));
+                } catch(error) {
+                    listContainer.innerHTML = `<p class="text-red-500">Erro: ${error.message}</p>`;
+                }
+            }
+
+            // CRIA NOVO SUPERADMINISTRADOR
+            async function handleCreateSuperAdmin(event) {
+                event.preventDefault();
+                const form = event.target;
+                const statusEl = document.getElementById('superAdminFormStatus');
+                statusEl.textContent = 'A processar...';
+                
+                const data = {
+                    username: form.username.value,
+                    fullName: form.fullName.value,
+                    password: form.password.value,
+                    canManage: form.canManage.checked
+                };
+
+                try {
+                    const response = await fetch('http://localhost:3000/api/admin/superadmins', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` },
+                        body: JSON.stringify(data)
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.message);
+                    statusEl.textContent = "Super Admin criado com sucesso!";
+                    form.reset();
+                    loadSuperAdmins();
+                } catch(error) {
+                    statusEl.textContent = `Erro: ${error.message}`;
+                }
+            }
+
+            // EXCLUI SUPERADMINISTRADOR
+            async function handleDeleteSuperAdmin(adminId) {
+                if (!confirm('Tem a certeza que deseja excluir este Super Admin? Esta ação é irreversível.')) return;
+
+                try {
+                    const response = await fetch(`http://localhost:3000/api/admin/superadmins/${adminId}`, {
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                    });
+                    if (!response.ok) {
+                        const err = await response.json();
+                        throw new Error(err.message);
+                    }
+                    loadSuperAdmins();
+                } catch (error) {
+                    alert(`Erro ao excluir: ${error.message}`);
+                }
+            }
+            // --- Fim das Funções de Gerenciamento de Superadministradores ---
+
+            function renderCreateClientForm() {
+                const container = document.getElementById('createClientSection');
+                container.innerHTML = `
+                    <h3 class="text-lg font-bold mb-4">Criar Novo Cliente</h3>
+                    <form id="createCompanyForm" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div><label class="form-label">Nome da Empresa</label><input name="companyName" class="form-input" required></div>
+                        <div><label class="form-label">Nicho de Mercado</label><select name="niche" id="nicheSelector" class="form-input" required><option>Carregando...</option></select></div>
+                        <div><label class="form-label">Username do Admin</label><input name="adminUsername" class="form-input" required></div>
+                        <div><label class="form-label">Senha Provisória</label><input type="password" name="adminPassword" class="form-input" required></div>
+                        <div class="col-span-1 md:col-span-2"><label class="form-label">Nome Completo do Admin</label><input name="adminFullName" class="form-input" required></div>
+                        <div class="col-span-1 md:col-span-2"><label class="form-label">Módulos Disponíveis</label><div id="moduleSelector" class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2"></div></div>
+                        <div class="col-span-1 md:col-span-2 mt-2"><button type="submit" class="form-button">Criar Cliente</button></div>
+                    </form>
+                    <div id="formStatus" class="mt-2 text-sm"></div>`;
+                document.getElementById('createCompanyForm').addEventListener('submit', handleCreateCompany);
+                loadNicheOptions();
+                document.getElementById('nicheSelector').addEventListener('change', (e) => {
+                    displayModuleCheckboxes('moduleSelector', e.target.value);
+                });
+            }
+
+            async function loadClientList() {
+                const clientListContainer = document.getElementById('clientListSection');
+                clientListContainer.innerHTML = 'Carregando lista de clientes...';
+                try {
+                    const response = await fetch('http://localhost:3000/api/admin/clients', { 
+                        headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } 
+                    });
+                    if (!response.ok) throw new Error('Falha ao buscar clientes.');
+                    const clients = await response.json();
+                    let tableHTML = `
+                        <h3 class="text-lg font-bold mb-4">Lista de Clientes</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-slate-50">
+                                    <tr>
+                                        <th class="p-3 font-semibold">Cliente</th>
+                                        <th class="p-3 font-semibold">Módulos</th>
+                                        <th class="p-3 font-semibold text-right">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>`;
+                    clients.forEach(client => {
+                        tableHTML += `
+                            <tr class="border-b">
+                                <td class="p-3 align-top">${client.name}</td>
+                                <td class="p-3 align-top">${client.licensed_modules ? client.licensed_modules.split(',').join(', ') : 'Nenhum'}</td>
+                                <td class="p-3 flex space-x-2 justify-end">
+                                    <button class="view-users-btn action-button form-button bg-green-600" data-company-id="${client.id}" title="Ver Usuários"><i class="fas fa-users"></i></button>
+                                    <button class="edit-modules-btn action-button form-button" data-company-id="${client.id}" title="Editar Módulos"><i class="fas fa-cogs"></i></button>
+                                    <button class="edit-client-btn action-button form-button bg-yellow-500" data-company-id="${client.id}" data-client-name="${client.name}" title="Editar Cliente"><i class="fas fa-edit"></i></button>
+                                    <button class="delete-client-btn action-button form-button bg-red-600" data-company-id="${client.id}" data-client-name="${client.name}" title="Excluir"><i class="fas fa-trash"></i></button>
+                                </td>
+                            </tr>`;
+                    });
+                    tableHTML += '</tbody></table></div>';
+                    clientListContainer.innerHTML = tableHTML;
+                    
+                    document.querySelectorAll('.view-users-btn').forEach(btn => btn.addEventListener('click', () => showUserModal(btn.dataset.companyId)));
+                    document.querySelectorAll('.edit-modules-btn').forEach(btn => btn.addEventListener('click', () => editClientModules(btn.dataset.companyId)));
+                    document.querySelectorAll('.edit-client-btn').forEach(btn => btn.addEventListener('click', () => editClient(btn.dataset.companyId, btn.dataset.clientName)));
+                    document.querySelectorAll('.delete-client-btn').forEach(btn => btn.addEventListener('click', () => showDeleteClientModal(btn.dataset.companyId, btn.dataset.clientName)));
+                } catch (error) { 
+                    console.error('Erro:', error);
+                    clientListContainer.innerHTML = `<p class="p-4 text-red-500">Erro: ${error.message}</p>`; 
+                }
+            }
+            
+            function loadNicheOptions() {
+                const nicheSelector = document.getElementById('nicheSelector');
+                
+                nicheTemplates = {
+                    'retail': { name: 'Varejo', modules: ['Vendas', 'Financeiro', 'Logística', 'Marketing'] },
+                    'manufacturing': { name: 'Manufatura', modules: ['Produção', 'Compras', 'Qualidade', 'Logística'] },
+                    'industry': { name: 'Indústria', modules: [
+                        'Financeiro', 'Logística', 'Gerente', 'Diretor', 'Vendas', 'Recursos Humanos', 'TI', 
+                        'Produção', 'Marketing', 'Jurídico', 'Compras', 'Projetos', 'Auditoria', 
+                        'Departamento Pessoal', 'Segurança do Trabalho', 'Mecânica', 'Segurança Interna', 'Qualidade'
+                    ] },
+                    'services': { name: 'Serviços', modules: ['Projetos', 'Recursos Humanos', 'Marketing', 'Financeiro'] }
+                };
+
+                if (nicheSelector) {
+                    nicheSelector.innerHTML = '<option value="">-- Selecione um Nicho --</option>';
+                    for (const niche in nicheTemplates) {
+                        nicheSelector.innerHTML += `<option value="${niche}">${nicheTemplates[niche].name}</option>`;
+                    }
+                }
+            }
+
+            function displayModuleCheckboxes(containerId, niche, selectedModules = []) {
+                const moduleSelector = document.getElementById(containerId);
+                moduleSelector.innerHTML = '';
+                if (!niche || !nicheTemplates[niche]) return;
+                const modules = nicheTemplates[niche].modules;
+                modules.forEach(moduleName => {
+                    const moduleDiv = document.createElement('div');
+                    moduleDiv.className = 'flex items-center space-x-2';
+                    moduleDiv.innerHTML = `
+                        <input type="checkbox" name="modules" value="${moduleName}" class="h-4 w-4 text-blue-600 rounded" ${selectedModules.includes(moduleName) ? 'checked' : ''}>
+                        <label class="text-sm"><i class="${moduleIcons[moduleName] || 'fas fa-cube'} mr-2 text-slate-600"></i>${moduleName}</label>`;
+                    moduleSelector.appendChild(moduleDiv);
+                });
+            }
+            
+            async function handleCreateCompany(event) {
+                event.preventDefault();
+                const form = event.target;
+                const statusEl = document.getElementById('formStatus');
+                statusEl.textContent = 'A processar...';
+                const formData = new FormData(form);
+                const data = Object.fromEntries(formData.entries());
+                data.modules = formData.getAll('modules');
+                if (!data.modules.length) {
+                    statusEl.textContent = 'Erro: Pelo menos um módulo deve ser selecionado.';
+                    return;
+                }
+                try {
+                    const response = await fetch('http://localhost:3000/api/admin/companies', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` },
+                        body: JSON.stringify(data)
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.message);
+                    statusEl.textContent = result.message;
+                    form.reset();
+                    document.getElementById('moduleSelector').innerHTML = '';
+                    loadClientList();
+                } catch (error) {
+                    console.error('Erro ao criar empresa:', error);
+                    statusEl.textContent = `Erro: ${error.message}`;
+                }
+            }
+
+            async function showUserModal(companyId) {
+                const userModal = document.getElementById('userModal');
+                const userListContainer = document.getElementById('userListContainer');
+                userListContainer.innerHTML = 'Carregando...';
+                userModal.classList.add('active');
+                try {
+                    const response = await fetch(`http://localhost:3000/api/admin/clients/${companyId}/users`, { headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } });
+                    if (!response.ok) throw new Error('Falha ao buscar usuários.');
+                    const users = await response.json();
+                    let tableHTML = `<table class="w-full text-sm text-left"><thead><tr class="bg-slate-50"><th class="p-3 font-semibold">Username</th><th class="p-3 font-semibold">Nome</th><th class="p-3 font-semibold">Status</th></tr></thead><tbody>`;
+                    users.forEach(user => {
+                        tableHTML += `<tr class="border-b"><td class="p-3">${user.username}</td><td class="p-3">${user.full_name}</td><td class="p-3">${user.is_active ? 'Ativo' : 'Inativo'}</td></tr>`;
+                    });
+                    tableHTML += '</tbody></table>';
+                    userListContainer.innerHTML = tableHTML;
+                } catch (error) {
+                    userListContainer.innerHTML = `<p class="p-4 text-red-500">Erro: ${error.message}</p>`;
+                }
+                document.getElementById('closeUserModal').onclick = () => userModal.classList.remove('active');
+            }
+
+            async function editClientModules(companyId) {
+                const section = document.getElementById('clientListSection');
+                loadNicheOptions(); // Make sure templates are loaded
+                try {
+                    const response = await fetch(`http://localhost:3000/api/admin/clients/${companyId}`, { headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } });
+                    if (!response.ok) throw new Error('Falha ao buscar detalhes do cliente.');
+                    const client = await response.json();
+                    section.innerHTML = `
+                        <h3 class="text-lg font-bold mb-4">Editar Módulos de ${client.name}</h3>
+                        <form id="editModulesForm" class="space-y-4">
+                            <div><label class="form-label">Nicho de Mercado</label><select name="niche" id="nicheSelectorEdit" class="form-input"></select></div>
+                            <div><label class="form-label">Módulos</label><div id="moduleSelectorEdit" class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2"></div></div>
+                            <div class="flex space-x-2"><button type="submit" class="form-button">Salvar</button><button type="button" id="cancelEditModules" class="form-button form-button-gray">Cancelar</button></div>
+                        </form><div id="editModulesStatus" class="mt-2 text-sm"></div>`;
+                    
+                    const nicheSelectorEdit = document.getElementById('nicheSelectorEdit');
+                    for (const niche in nicheTemplates) {
+                        nicheSelectorEdit.innerHTML += `<option value="${niche}">${nicheTemplates[niche].name}</option>`;
+                    }
+                    nicheSelectorEdit.value = client.niche || '';
+                    const selectedModules = client.licensed_modules ? client.licensed_modules.split(',') : [];
+                    displayModuleCheckboxes('moduleSelectorEdit', client.niche, selectedModules);
+                    
+                    nicheSelectorEdit.addEventListener('change', (e) => displayModuleCheckboxes('moduleSelectorEdit', e.target.value, []));
+
+                    document.getElementById('editModulesForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const data = { niche: e.target.niche.value, modules: Array.from(e.target.elements.modules).filter(cb => cb.checked).map(cb => cb.value) };
+                        try {
+                            const putResponse = await fetch(`http://localhost:3000/api/admin/clients/${companyId}/modules`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` },
+                                body: JSON.stringify(data)
+                            });
+                            const result = await putResponse.json();
+                            if (!putResponse.ok) throw new Error(result.message);
+                            showAdminPage('admin_client_management', 'Gestão de Clientes');
+                        } catch (error) {
+                            document.getElementById('editModulesStatus').textContent = `Erro: ${error.message}`;
+                        }
+                    });
+                    document.getElementById('cancelEditModules').addEventListener('click', () => showAdminPage('admin_client_management', 'Gestão de Clientes'));
+                } catch (error) {
+                    section.innerHTML = `<p class="p-4 text-red-500">Erro: ${error.message}</p>`;
+                }
+            }
+
+            function editClient(companyId, clientName) {
+                const section = document.getElementById('clientListSection');
+                section.innerHTML = `
+                    <h3 class="text-lg font-bold mb-4">Editar Cliente ${clientName}</h3>
+                    <form id="editClientForm" class="space-y-4">
+                        <div><label class="form-label">Novo Nome da Empresa</label><input name="companyName" class="form-input" value="${clientName}" required></div>
+                        <div class="flex space-x-2"><button type="submit" class="form-button">Salvar</button><button type="button" id="cancelEditClient" class="form-button form-button-gray">Cancelar</button></div>
+                    </form><div id="editClientStatus" class="mt-2 text-sm"></div>`;
+                
+                document.getElementById('editClientForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const data = { companyName: e.target.companyName.value };
+                    try {
+                        const response = await fetch(`http://localhost:3000/api/admin/clients/${companyId}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` },
+                            body: JSON.stringify(data)
+                        });
+                        const result = await response.json();
+                        if (!response.ok) throw new Error(result.message);
+                        showAdminPage('admin_client_management', 'Gestão de Clientes');
+                    } catch (error) {
+                        document.getElementById('editClientStatus').textContent = `Erro: ${error.message}`;
+                    }
+                });
+                document.getElementById('cancelEditClient').addEventListener('click', () => showAdminPage('admin_client_management', 'Gestão de Clientes'));
+            }
+
+            function showDeleteClientModal(companyId, clientName) {
+                const deleteModal = document.getElementById('deleteClientModal');
+                document.getElementById('deleteClientName').textContent = clientName;
+                document.getElementById('deleteError').textContent = '';
+                deleteModal.classList.add('active');
+                
+                const form = document.getElementById('deleteClientForm');
+                const newForm = form.cloneNode(true); // Evita múltiplos listeners
+                form.parentNode.replaceChild(newForm, form);
+
+                newForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const credentials = { username: e.target.superUsername.value, password: e.target.superPassword.value };
+                    try {
+                        const loginResponse = await fetch('http://localhost:3000/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) });
+                        if (!loginResponse.ok) throw new Error('Credenciais de super admin inválidas.');
+                        
+                        const loginData = await loginResponse.json();
+                        if(loginData.user.role.name !== 'Super Admin') throw new Error('Apenas um Super Admin pode excluir clientes.');
+
+                        const deleteResponse = await fetch(`http://localhost:3000/api/admin/clients/${companyId}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` } });
+                        if (!deleteResponse.ok) { const err = await deleteResponse.json(); throw new Error(err.message); }
+                        
+                        deleteModal.classList.remove('active');
+                        showAdminPage('admin_client_management', 'Gestão de Clientes');
+                    } catch (error) {
+                        document.getElementById('deleteError').textContent = error.message;
+                    }
+                });
+                
+                document.getElementById('closeDeleteModal').onclick = () => deleteModal.classList.remove('active');
+                document.getElementById('cancelDelete').onclick = () => deleteModal.classList.remove('active');
+            }
+        });
+    </script>
+</body>
+</html>
+
+
+.env
+
+
+DB_PASSWORD="new_password"
+JWT_SECRET="sua_chave_secreta_super_segura_aqui_12345"
