@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestão de Chaves de Ativação - Taipan One ERP</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+        .module-section { background-color: #ffffff; padding: 1.5rem; border-radius: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.04); }
+        .form-input { width: 100%; border: 1px solid #d1d5db; border-radius: 0.5rem; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+        .form-label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; font-weight: 500; color: #374151; }
+        .form-button { background-color: #2563eb; color: white; font-weight: 600; padding: 0.5rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; transition: background-color 0.2s; }
+        .form-button:hover { background-color: #1d4ed8; }
+        .form-button-red { background-color: #dc2626; }
+        .form-button-red:hover { background-color: #b91c1c; }
+        .form-button-gray { background-color: #6b7280; }
+        .form-button-gray:hover { background-color: #4b5563; }
+        .action-button { padding: 0.25rem 0.5rem; font-size: 0.75rem; border-radius: 0.375rem; }
+    </style>
+</head>
+<body class="bg-slate-100 p-6 md:p-8">
+    <div class="space-y-6">
+        <!-- Seção para Criar Nova Chave -->
+        <div class="module-section">
+            <h3 class="text-lg font-bold mb-4 text-slate-800">Criar Nova Chave de Ativação</h3>
+            <form id="createKeyForm" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="form-label">Empresa</label>
+                    <select name="companyId" id="companySelector" class="form-input" required>
+                        <option value="">-- Selecione uma Empresa --</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Validade (dias)</label>
+                    <input type="number" name="validityDays" class="form-input" min="1" required>
+                </div>
+                <div class="col-span-1 md:col-span-2">
+                    <label class="form-label">Módulos Disponíveis</label>
+                    <div id="moduleSelector" class="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2"></div>
+                </div>
+                <div class="col-span-1 md:col-span-2">
+                    <button type="submit" class="form-button">Gerar Chave</button>
+                </div>
+            </form>
+            <div id="keyFormStatus" class="mt-2 text-sm text-red-500"></div>
+        </div>
+
+        <!-- Lista de Chaves -->
+        <div id="keyListSection" class="module-section">
+            <h3 class="text-lg font-bold mb-4 text-slate-800">Chaves de Ativação</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left text-slate-600">
+                    <thead class="bg-slate-50">
+                        <tr>
+                            <th class="p-3 font-semibold">Chave</th>
+                            <th class="p-3 font-semibold">Empresa</th>
+                            <th class="p-3 font-semibold">Módulos</th>
+                            <th class="p-3 font-semibold">Validade</th>
+                            <th class="p-3 font-semibold">Usada</th>
+                            <th class="p-3 font-semibold text-right">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="keyListBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const moduleIcons = {
+            'Financeiro': 'fas fa-dollar-sign', 'Logística': 'fas fa-truck', 'Gerente': 'fas fa-user-tie',
+            'Diretor': 'fas fa-briefcase', 'Vendas': 'fas fa-shopping-cart', 'Recursos Humanos': 'fas fa-users',
+            'TI': 'fas fa-laptop', 'Produção': 'fas fa-industry', 'Marketing': 'fas fa-bullhorn',
+            'Jurídico': 'fas fa-balance-scale', 'Compras': 'fas fa-shopping-bag', 'Projetos': 'fas fa-project-diagram',
+            'Auditoria': 'fas fa-search', 'Departamento Pessoal': 'fas fa-id-card', 'Segurança do Trabalho': 'fas fa-hard-hat',
+            'Mecânica': 'fas fa-tools', 'Segurança Interna': 'fas fa-shield-alt', 'Qualidade': 'fas fa-check-circle'
+        };
+
+        async function loadCompanies() {
+            const companySelector = document.getElementById('companySelector');
+            try {
+                const response = await fetch('http://localhost:3000/api/admin/clients', {
+                    headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                });
+                if (!response.ok) throw new Error('Falha ao buscar empresas.');
+                const companies = await response.json();
+                companySelector.innerHTML = '<option value="">-- Selecione uma Empresa --</option>';
+                companies.forEach(company => {
+                    companySelector.innerHTML += `<option value="${company.id}">${company.name}</option>`;
+                });
+            } catch (error) {
+                document.getElementById('keyFormStatus').textContent = `Erro: ${error.message}`;
+            }
+        }
+
+        async function loadModules() {
+            const moduleSelector = document.getElementById('moduleSelector');
+            try {
+                const response = await fetch('http://localhost:3000/api/admin/modules', {
+                    headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                });
+                if (!response.ok) throw new Error('Falha ao buscar módulos.');
+                const modules = await response.json();
+                moduleSelector.innerHTML = '';
+                modules.forEach(module => {
+                    const moduleDiv = document.createElement('div');
+                    moduleDiv.className = 'flex items-center space-x-2';
+                    moduleDiv.innerHTML = `
+                        <input type="checkbox" name="modules" value="${module.name}" class="h-4 w-4 text-blue-600 rounded">
+                        <label class="text-sm"><i class="${moduleIcons[module.name] || 'fas fa-cube'} mr-2 text-slate-600"></i>${module.name}</label>`;
+                    moduleSelector.appendChild(moduleDiv);
+                });
+            } catch (error) {
+                document.getElementById('keyFormStatus').textContent = `Erro: ${error.message}`;
+            }
+        }
+
+        async function loadKeys() {
+            const keyListBody = document.getElementById('keyListBody');
+            try {
+                const response = await fetch('http://localhost:3000/api/admin/keys', {
+                    headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                });
+                if (!response.ok) throw new Error('Falha ao buscar chaves.');
+                const keys = await response.json();
+                keyListBody.innerHTML = '';
+                keys.forEach(key => {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b';
+                    row.innerHTML = `
+                        <td class="p-3">${key.chave}</td>
+                        <td class="p-3">${key.company_name}</td>
+                        <td class="p-3">${key.modulos ? key.modulos.split(',').join(', ') : 'Nenhum'}</td>
+                        <td class="p-3">${new Date(key.valid_until).toLocaleDateString('pt-BR')}</td>
+                        <td class="p-3">${key.usada ? 'Sim' : 'Não'}</td>
+                        <td class="p-3 text-right">
+                            <button class="action-button form-button-red delete-key-btn" data-key-id="${key.id}" title="Excluir"><i class="fas fa-trash"></i></button>
+                        </td>`;
+                    keyListBody.appendChild(row);
+                });
+                document.querySelectorAll('.delete-key-btn').forEach(btn => btn.addEventListener('click', () => handleDeleteKey(btn.dataset.keyId)));
+            } catch (error) {
+                keyListBody.innerHTML = `<tr><td colspan="6" class="p-3 text-red-500">Erro: ${error.message}</td></tr>`;
+            }
+        }
+
+        async function handleCreateKey(event) {
+            event.preventDefault();
+            const form = event.target;
+            const statusEl = document.getElementById('keyFormStatus');
+            statusEl.textContent = 'A processar...';
+            const formData = new FormData(form);
+            const data = {
+                companyId: formData.get('companyId'),
+                validityDays: formData.get('validityDays'),
+                modules: formData.getAll('modules')
+            };
+            try {
+                const response = await fetch('http://localhost:3000/api/admin/keys', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json', 
+                        'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` 
+                    },
+                    body: JSON.stringify(data)
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.message);
+                statusEl.textContent = 'Chave criada com sucesso!';
+                form.reset();
+                document.getElementById('moduleSelector').innerHTML = '';
+                loadKeys();
+            } catch (error) {
+                statusEl.textContent = `Erro: ${error.message}`;
+            }
+        }
+
+        async function handleDeleteKey(keyId) {
+            if (!confirm('Tem certeza que deseja excluir esta chave? Esta ação é irreversível.')) return;
+            try {
+                const response = await fetch(`http://localhost:3000/api/admin/keys/${keyId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                });
+                if (!response.ok) throw new Error('Falha ao excluir chave.');
+                loadKeys();
+            } catch (error) {
+                document.getElementById('keyFormStatus').textContent = `Erro: ${error.message}`;
+            }
+        }
+app.post('/api/validate_technical_key', async (req, res) => {
+    const { chave } = req.body;
+    try {
+        const [rows] = await pool.query('SELECT * FROM chaves_tecnicas WHERE chave = ?', [chave]);
+        if (rows.length === 0) {
+            return res.status(403).json({ message: 'Chave técnica inválida' });
+        }
+        const keyData = rows[0];
+        await pool.query('UPDATE companies SET is_active = TRUE WHERE id = ?', [keyData.empresa_id]);
+        await pool.query('DELETE FROM company_module_access WHERE company_id = ?', [keyData.empresa_id]);
+        const modules = keyData.modulos.split(',');
+        for (const moduleName of modules) {
+            const [moduleRows] = await pool.query('SELECT id FROM modules WHERE name = ?', [moduleName]);
+            if (moduleRows.length > 0) {
+                await pool.query('INSERT INTO company_module_access (company_id, module_id) VALUES (?, ?)', [keyData.empresa_id, moduleRows[0].id]);
+            }
+        }
+        res.json({ message: 'Módulos ativados com sucesso' });
+    } catch (error) {
+        console.error('Erro ao validar chave técnica:', error.message);
+        res.status(500).json({ message: 'Erro no servidor' });
+    }
+});
+        document.getElementById('createKeyForm').addEventListener('submit', handleCreateKey);
+        loadCompanies();
+        loadModules();
+        loadKeys();
+    </script>
+</body>
+</html>

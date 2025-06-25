@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chaves de Ativação - Taipan One ERP</title>
+    <link href="/css/output.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-slate-100 p-6 md:p-8">
+    <div class="space-y-6">
+        <!-- Lista de Empresas -->
+        <div class="module-section">
+            <h3 class="text-lg font-bold mb-4 text-slate-800">Empresas Cadastradas</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left text-slate-600">
+                    <thead class="bg-slate-50">
+                        <tr>
+                            <th class="p-3 font-semibold">Empresa</th>
+                            <th class="p-3 font-semibold">Status</th>
+                            <th class="p-3 font-semibold">Módulos Contratados</th>
+                            <th class="p-3 font-semibold text-right">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="clientListBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Formulário de Ativação -->
+        <div id="activationSection" class="module-section hidden">
+            <h3 class="text-lg font-bold mb-4 text-slate-800">Ativação de Cliente</h3>
+            <div class="grid grid-cols-1 gap-4">
+                <div>
+                    <label class="form-label">Empresa</label>
+                    <input id="selectedClientName" class="form-input" readonly>
+                </div>
+                <div>
+                    <label class="form-label">Módulos Contratados</label>
+                    <div id="clientModules" class="text-sm text-slate-600"></div>
+                </div>
+                <div>
+                    <label class="form-label">Validade da Chave (dias)</label>
+                    <input id="validityDays" type="number" min="1" class="form-input" placeholder="Ex.: 30">
+                </div>
+                <button id="generateKeyBtn" class="form-button">Gerar Chave de Ativação</button>
+                <div id="generatedKeySection" class="hidden">
+                    <label class="form-label">Chave Gerada</label>
+                    <input id="generatedKey" class="form-input" readonly>
+                    <button id="copyKeyBtn" class="form-button mt-2">Copiar Chave</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Formulário de Ativação de Serviços -->
+        <div id="serviceActivationSection" class="module-section hidden">
+            <h3 class="text-lg font-bold mb-4 text-slate-800">Ativar Serviços</h3>
+            <div class="grid grid-cols-1 gap-4">
+                <div>
+                    <label class="form-label">Empresa</label>
+                    <input id="serviceClientName" class="form-input" readonly>
+                </div>
+                <div>
+                    <label class="form-label">Chave de Ativação</label>
+                    <input id="activationKey" class="form-input" placeholder="Cole a chave gerada">
+                </div>
+                <button id="activateServiceBtn" class="form-button">Ativar Serviços</button>
+                <div id="technicalKeySection" class="hidden">
+                    <label class="form-label">Chave para Técnico</label>
+                    <input id="technicalKey" class="form-input" readonly>
+                    <button id="copyTechnicalKeyBtn" class="form-button mt-2">Copiar Chave</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedClientId = null;
+
+        async function loadClients() {
+            const clientListBody = document.getElementById('clientListBody');
+            try {
+                const response = await fetch('http://192.168.3.104:3002/api/admin/clients', {
+                    headers: { 'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}` }
+                });
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        window.location.href = '/';
+                    }
+                    throw new Error('Falha ao buscar empresas.');
+                }
+                const clients = await response.json();
+                clientListBody.innerHTML = '';
+                clients.forEach(client => {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b';
+                    row.innerHTML = `
+                        <td class="p-3">${client.name}</td>
+                        <td class="p-3">${client.is_active ? 'Ativo' : 'Inativo'}</td>
+                        <td class="p-3">${client.licensed_modules || 'Nenhum'}</td>
+                        <td class="p-3 text-right">
+                            <button class="action-button form-button generate-key-btn" data-client-id="${client.id}" data-client-name="${client.name}" data-modules="${client.licensed_modules || ''}">Gerar Chave</button>
+                            <button class="action-button form-button activate-service-btn" data-client-id="${client.id}" data-client-name="${client.name}">Ativar Serviços</button>
+                        </td>`;
+                    clientListBody.appendChild(row);
+                });
+                document.querySelectorAll('.generate-key-btn').forEach(btn => btn.addEventListener('click', handleGenerateKey));
+                document.querySelectorAll('.activate-service-btn').forEach(btn => btn.addEventListener('click', handleActivateService));
+            } catch (error) {
+                clientListBody.innerHTML = `<tr><td colspan="4" class="p-3 text-red-500">Erro: ${error.message}</td></tr>`;
+            }
+        }
+
+        function handleGenerateKey(event) {
+            const button = event.target;
+            selectedClientId = button.dataset.clientId;
+            document.getElementById('selectedClientName').value = button.dataset.clientName;
+            document.getElementById('clientModules').textContent = button.dataset.modules || 'Nenhum';
+            document.getElementById('activationSection').classList.remove('hidden');
+            document.getElementById('serviceActivationSection').classList.add('hidden');
+            document.getElementById('generatedKeySection').classList.add('hidden');
+            document.getElementById('validityDays').value = '';
+        }
+
+        function handleActivateService(event) {
+            const button = event.target;
+            selectedClientId = button.dataset.clientId;
+            document.getElementById('serviceClientName').value = button.dataset.clientName;
+            document.getElementById('serviceActivationSection').classList.remove('hidden');
+            document.getElementById('activationSection').classList.add('hidden');
+            document.getElementById('technicalKeySection').classList.add('hidden');
+            document.getElementById('activationKey').value = '';
+        }
+
+        document.getElementById('generateKeyBtn').addEventListener('click', async () => {
+            const validityDays = document.getElementById('validityDays').value;
+            if (!validityDays || !selectedClientId) {
+                alert('Selecione uma empresa e informe a validade da chave.');
+                return;
+            }
+            try {
+                const response = await fetch('http://192.168.3.104:3002/api/admin/keys', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}`
+                    },
+                    body: JSON.stringify({ companyId: selectedClientId, validityDays, modules: document.getElementById('clientModules').textContent.split(',') })
+                });
+                if (!response.ok) throw new Error('Falha ao gerar chave.');
+                const result = await response.json();
+                document.getElementById('generatedKey').value = result.chave;
+                document.getElementById('generatedKeySection').classList.remove('hidden');
+            } catch (error) {
+                alert(`Erro: ${error.message}`);
+            }
+        });
+
+        document.getElementById('copyKeyBtn').addEventListener('click', () => {
+            navigator.clipboard.writeText(document.getElementById('generatedKey').value);
+            alert('Chave copiada!');
+        });
+
+        document.getElementById('activateServiceBtn').addEventListener('click', async () => {
+            const activationKey = document.getElementById('activationKey').value;
+            if (!activationKey || !selectedClientId) {
+                alert('Informe a chave de ativação.');
+                return;
+            }
+            try {
+                const response = await fetch('http://192.168.3.104:3002/api/ativar_cliente', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${sessionStorage.getItem('accessToken')}`
+                    },
+                    body: JSON.stringify({ chave: activationKey })
+                });
+                if (!response.ok) throw new Error('Falha ao ativar serviços.');
+                const result = await response.json();
+                document.getElementById('technicalKey').value = result.technicalKey;
+                document.getElementById('technicalKeySection').classList.remove('hidden');
+                await loadClients();
+            } catch (error) {
+                alert(`Erro: ${error.message}`);
+            }
+        });
+
+        document.getElementById('copyTechnicalKeyBtn').addEventListener('click', () => {
+            navigator.clipboard.writeText(document.getElementById('technicalKey').value);
+            alert('Chave técnica copiada!');
+        });
+
+        loadClients();
+    </script>
+</body>
+</html>

@@ -5,20 +5,20 @@ const mysql = require('mysql2/promise');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const path = require('path'); // INSERIDO: Para manipular caminhos de arquivos
+const path = require('path');
+const crypto = require('crypto'); // Adicionado para gerar chaves únicas
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // ou use um domínio específico em produção
+  res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   next();
 });
 
-// INSERIDO: Configura o Express para servir arquivos estáticos da pasta 'public'
 app.use(express.static(path.join(__dirname, 'public')));
 
 const pool = mysql.createPool({
@@ -56,14 +56,14 @@ function authenticateToken(req, res, next) {
 }
 
 function ensureSuperAdmin(req, res, next) {
-    if (req.user.role_id !== 101) {
+    if (req.user.role_id !== 1) { // Alterado de 101 para 1, conforme a tabela roles
         return res.status(403).json({ message: 'Acesso restrito a super admins' });
     }
     next();
 }
 
 function ensureMasterAdmin(req, res, next) {
-    if (req.user.role_id !== 101 || !req.user.canManageSuperAdmins) {
+    if (req.user.role_id !== 1 || !req.user.canManageSuperAdmins) {
         return res.status(403).json({ message: 'Acesso restrito ao admin master.' });
     }
     next();
@@ -91,11 +91,12 @@ app.post('/api/login', async (req, res) => {
             user: {
                 id: user.id,
                 fullName: user.full_name,
-                role: { name: user.role_id === 101 ? 'Super Admin' : 'Other' },
+                role: { name: user.role_id === 1 ? 'Super Admin' : 'Other' },
                 canManageSuperAdmins: !!user.can_manage_super_admins,
-                permissions: user.role_id === 101 ? [
+                permissions: user.role_id === 1 ? [
                     { id: 'admin_dashboard', name: 'Dashboard Admin' },
                     { id: 'admin_client_management', name: 'Gestão de Clientes' },
+                    { id: 'admin_activations', name: 'Chaves de Ativação' } // Adicionado
                 ] : []
             }
         });
@@ -107,7 +108,7 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/admin/superadmins', authenticateToken, ensureMasterAdmin, async (req, res) => {
     try {
-        const [rows] = await pool.query("SELECT id, username, full_name, can_manage_super_admins FROM users WHERE role_id = 101 ORDER BY id");
+        const [rows] = await pool.query("SELECT id, username, full_name, can_manage_super_admins FROM users WHERE role_id = 1 ORDER BY id");
         res.json(rows);
     } catch(error) {
         res.status(500).json({ message: 'Erro ao buscar administradores.' });
@@ -122,7 +123,7 @@ app.post('/api/admin/superadmins', authenticateToken, ensureMasterAdmin, async (
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         await pool.query(
-            "INSERT INTO users (username, full_name, password_hash, role_id, can_manage_super_admins, email, is_active) VALUES (?, ?, ?, 101, ?, ?, 1)",
+            "INSERT INTO users (username, full_name, password_hash, role_id, can_manage_super_admins, email, is_active) VALUES (?, ?, ?, 1, ?, ?, 1)",
             [username, fullName, hashedPassword, canManage ? 1 : 0, `${username}@taipan.local`]
         );
         res.status(201).json({ message: "Super Admin criado com sucesso." });
@@ -147,7 +148,7 @@ app.delete('/api/admin/superadmins/:id', authenticateToken, ensureMasterAdmin, a
     }
 
     try {
-        const [result] = await pool.query("DELETE FROM users WHERE id = ? AND role_id = 101", [adminIdToDelete]);
+        const [result] = await pool.query("DELETE FROM users WHERE id = ? AND role_id = 1", [adminIdToDelete]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ message: "Administrador não encontrado." });
         }
@@ -196,7 +197,7 @@ app.get('/api/admin/clients/:id/users', authenticateToken, ensureSuperAdmin, asy
         const [rows] = await pool.query(`
             SELECT u.id, u.username, u.full_name, u.is_active
             FROM users u
-            WHERE u.company_id = ? AND u.role_id != 101
+            WHERE u.company_id = ? AND u.role_id != 1
         `, [req.params.id]);
         res.json(rows);
     } catch (error) {
@@ -214,7 +215,7 @@ app.post('/api/admin/companies', authenticateToken, ensureSuperAdmin, async (req
 
         const hashedPassword = await bcrypt.hash(adminPassword, 10);
         const [adminUserResult] = await pool.query('INSERT INTO users (username, password_hash, full_name, company_id, role_id, is_active, email) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-            [adminUsername, hashedPassword, adminFullName, companyId, 102, 1, `${adminUsername}@company.local`]);
+            [adminUsername, hashedPassword, adminFullName, companyId, 2, 1, `${adminUsername}@company.local`]);
         const adminUserId = adminUserResult.insertId;
 
         if (modules && modules.length > 0) {
@@ -290,7 +291,82 @@ app.delete('/api/admin/clients/:id', authenticateToken, ensureSuperAdmin, async 
     }
 });
 
-// INSERIDO: Serve o index.html para qualquer rota não tratada
+// Novas rotas para chaves de ativação
+app.get('/api/admin/modules', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT id, name FROM modules');
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar módulos:', error.message);
+        res.status(500).json({ message: 'Erro ao buscar módulos' });
+    }
+});
+
+app.get('/api/admin/keys', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT k.id, k.chave, c.name AS company_name, k.modulos, k.valid_until, k.usada
+            FROM chaves_ativacao k
+            JOIN companies c ON k.empresa_id = c.id
+        `);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao listar chaves:', error.message);
+        res.status(500).json({ message: 'Erro ao buscar chaves' });
+    }
+});
+
+app.post('/api/admin/keys', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    const { companyId, validityDays, modules } = req.body;
+    if (!companyId || !validityDays) {
+        return res.status(400).json({ message: 'Empresa e validade são obrigatórios.' });
+    }
+    try {
+        const chave = crypto.randomBytes(16).toString('hex');
+        const validUntil = new Date();
+        validUntil.setDate(validUntil.getDate() + parseInt(validityDays));
+        await pool.query(
+            'INSERT INTO chaves_ativacao (chave, empresa_id, valid_until, modulos, usada) VALUES (?, ?, ?, ?, ?)',
+            [chave, companyId, validUntil, modules.join(','), false]
+        );
+        res.status(201).json({ message: 'Chave criada com sucesso', chave });
+    } catch (error) {
+        console.error('Erro ao criar chave:', error.message);
+        res.status(500).json({ message: 'Erro ao criar chave' });
+    }
+});
+
+app.delete('/api/admin/keys/:id', authenticateToken, ensureSuperAdmin, async (req, res) => {
+    try {
+        const [result] = await pool.query('DELETE FROM chaves_ativacao WHERE id = ?', [req.params.id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Chave não encontrada' });
+        }
+        res.json({ message: 'Chave excluída com sucesso' });
+    } catch (error) {
+        console.error('Erro ao excluir chave:', error.message);
+        res.status(500).json({ message: 'Erro ao excluir chave' });
+    }
+});
+
+app.post('/api/ativar_cliente', async (req, res) => {
+    const { chave } = req.body;
+    try {
+        const [rows] = await pool.query(
+            'SELECT * FROM chaves_ativacao WHERE chave = ? AND usada = FALSE AND (valid_until > NOW() OR valid_until IS NULL)',
+            [chave]
+        );
+        if (rows.length === 0) {
+            return res.status(403).json({ message: 'Chave inválida ou expirada' });
+        }
+        await pool.query('UPDATE chaves_ativacao SET usada = TRUE, usada_em = NOW() WHERE chave = ?', [chave]);
+        res.json({ message: 'Ativação bem-sucedida' });
+    } catch (error) {
+        console.error('Erro ao validar chave:', error.message);
+        res.status(500).json({ message: 'Erro no servidor' });
+    }
+});
+
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

@@ -1,0 +1,81 @@
+ssh maoromualdo@192.168.3.171  
+
+senha : maor123@
+
+
+
+VPN-RedeMaor
+
+Perfeito! Sua Autoridade Certificadora (CA) foi criada com sucesso 🎉
+O certificado está salvo em:
+
+swift
+Copiar
+Editar
+/home/maoromualdo/openvpn-ca/pki/ca.crt
+
+VPN-RedeMaor
+Keypair and certificate request completed. Your files are:
+req: /home/maoromualdo/openvpn-ca/pki/reqs/server.req
+key: /home/maoromualdo/openvpn-ca/pki/private/server.key
+
+
+rec.senha.taipan@outlook.com
+
+senha recuperação login
+RecTaipan123@
+
+wireguard
+root@RedeMaor:/home/maoromualdo# cat server_private.key
+cH/m6DXf/tff+ItUrzCM/AuWN+7elP/lJubgBnoyKmY=
+root@RedeMaor:/home/maoromualdo# cat server_public.key
+3PIXJSXgliUNTpQqfRkep9zHf4PZH6rY2L/1wmL0PUE=
+root@RedeMaor:/home/maoromualdo#
+
+acessso ao github
+
+usuario : SystemTaipanOne
+repositorio: taipan-one.git
+
+senha:taipan13579@
+
+1. Garanta que seu projeto está versionado com Git
+cd "C:\Users\cinti\OneDrive\Área de Trabalho\projetos eclipse\Taipan HTML"
+git init
+git add .
+git commit -m "Minhas últimas alterações - 24.06.2025"
+
+2. Suba para o repositório remoto (GitHub)
+git remote add origin https://github.com/SystemTaipanOne/taipan-one.git
+git branch -M main
+git push -u origin main
+
+(Usuário: SystemTaipanOne)
+(Senha: taipan13579@)
+
+3. No SERVIDOR: baixe ou atualize o projeto
+ssh maoromualdo@170.78.118.12
+
+Se já estiver na pasta:
+cd ~/taipan-one
+git pull origin main
+
+Se ainda não clonou:
+cd ~
+git clone https://github.com/SystemTaipanOne/taipan-one.git taipan-one
+cd taipan-one
+
+4. Automatize com um script (opcional)
+nano atualizar.sh
+
+Cole o conteúdo abaixo:
+#!/bin/bash
+cd /home/maoromualdo/taipan-one
+git pull origin main
+
+Torne o script executável:
+chmod +x atualizar.sh
+
+Execute quando quiser atualizar:
+./atualizar.sh
+
